@@ -1,0 +1,39 @@
+{
+  "optimal_params": {
+    "w_EP": 0.1352985679330569,
+    "w_growth": 0.12648409048933618,
+    "w_reversal": 0.23394940173518006,
+    "w_quality": 0.06144186520127018,
+    "max_position_num": 23,
+    "stop_loss_rate": -0.11322783291975483
+  },
+  "robust_params": {
+    "w_EP": 0.13640262746827947,
+    "w_growth": 0.13092319335963637,
+    "w_reversal": 0.21672354045625225,
+    "w_quality": 0.06056839079814461,
+    "max_position_num": 23.0,
+    "stop_loss_rate": -0.09304875940459527
+  },
+  "use_robust": true,
+  "best_score": 8.50015617219334,
+  "best_metrics": {
+    "total_return": 1.2680678933458123,
+    "annual_return": 1.2680678933458123,
+    "max_drawdown": -0.12237955554524438,
+    "sharpe_ratio": 8.533186271004086,
+    "calmar_ratio": 10.361762532116737,
+    "win_rate": 0.5518390709336021,
+    "profit_loss_ratio": 1.1422103460406219,
+    "annual_turnover": 15.303009881074715
+  },
+  "validation": {
+    "is_overfit": "False",
+    "return_decay": 0.0,
+    "overfit_score": 0.0
+  },
+  "stability": {
+    "score": 0,
+    "is_stable": false
+  }
+}
