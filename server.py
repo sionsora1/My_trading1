@@ -88,12 +88,77 @@ class TaskStatus(BaseModel):
 # ============================================================
 
 @app.get("/", response_class=HTMLResponse)
+@app.get("/index.html", response_class=HTMLResponse)
 async def root():
-    """返回Web界面"""
+    """返回主页（导航枢纽）"""
+    html_file = BASE_DIR / "web" / "index.html"
+    if html_file.exists():
+        return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
+    # 回退到旧版首页
+    html_file = BASE_DIR / "web" / "app.html"
+    if html_file.exists():
+        return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
+    return HTMLResponse(content="<h1>请先创建 web/index.html 文件</h1>")
+
+@app.get("/app.html", response_class=HTMLResponse)
+async def app_page():
+    """返回回测分析页面"""
     html_file = BASE_DIR / "web" / "app.html"
     if html_file.exists():
         return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
     return HTMLResponse(content="<h1>请先创建 web/app.html 文件</h1>")
+
+@app.get("/vis.html", response_class=HTMLResponse)
+async def vis_page():
+    """返回 Streamlit 可视化入口说明页"""
+    return HTMLResponse(content="""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>可视化回测 - A股量化交易系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body { background: #f0f2f5; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+        .container { max-width: 600px; margin: 80px auto; text-align: center; }
+        .card { border: none; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); padding: 40px; }
+        .btn-launch { padding: 14px 40px; font-size: 1.1rem; border-radius: 10px; margin: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h2 style="font-size:2rem;margin-bottom:8px;">📊 Streamlit 可视化回测</h2>
+            <p class="text-muted mb-4">独立 Streamlit 应用，提供交互式净值曲线、回撤分析和每日操作统计</p>
+            <div id="status-area" class="mb-3">
+                <div class="spinner-border spinner-border-sm text-secondary"></div>
+                <span class="ms-2 text-muted">检测 Streamlit 服务状态...</span>
+            </div>
+            <a href="http://localhost:8501" class="btn btn-primary btn-launch" id="btn-streamlit" target="_blank">
+                <i class="bi bi-box-arrow-up-right"></i> 打开 Streamlit 界面
+            </a>
+            <br>
+            <a href="/index.html" class="btn btn-outline-secondary btn-launch">
+                <i class="bi bi-house-door"></i> 返回主页
+            </a>
+            <p class="text-muted mt-4" style="font-size:0.85rem;">
+                如果上面按钮不能打开，请在终端运行：<br>
+                <code>streamlit run app.py --server.port 8501</code>
+            </p>
+        </div>
+    </div>
+    <script>
+        fetch('http://localhost:8501/healthz', {mode:'no-cors'})
+            .then(() => {
+                document.getElementById('status-area').innerHTML = '<span style="color:#059669;">✅ Streamlit 服务运行中</span>';
+            })
+            .catch(() => {
+                document.getElementById('status-area').innerHTML = '<span style="color:#ef4444;">❌ Streamlit 服务未启动</span>';
+            });
+    </script>
+</body>
+</html>""")
 
 @app.get("/live.html", response_class=HTMLResponse)
 async def live_page():
@@ -490,6 +555,64 @@ async def import_stock_pool(pool: StockPoolImport):
 
 
 # ============================================================
+# 股票池跨面板同步
+# ============================================================
+
+@app.get("/api/pool/sync-from-live")
+async def sync_pool_from_live():
+    """从实盘股票池读取代码（供回测面板同步用）"""
+    pool = _load_stock_pool()
+    codes = [s['code'] for s in pool]
+    names = {s['code']: s.get('name', '') for s in pool}
+    return {
+        "status": "success",
+        "data": {
+            "codes": codes,
+            "names": names,
+            "count": len(codes),
+            "source": "实盘股票池",
+            "stocks": pool,
+        }
+    }
+
+
+class SyncPoolToLiveRequest(BaseModel):
+    """同步到实盘股票池"""
+    codes: List[str]
+
+
+@app.post("/api/pool/sync-to-live")
+async def sync_pool_to_live(req: SyncPoolToLiveRequest):
+    """将回测面板的股票池同步到实盘"""
+    valid_codes = [c.strip() for c in req.codes if c.strip().isdigit() and len(c.strip()) == 6]
+    if not valid_codes:
+        return {"status": "error", "message": "没有有效的股票代码"}
+
+    # 查询股票名称
+    result = []
+    for code in valid_codes:
+        name = ''
+        industry = ''
+        try:
+            info = data_fetcher.get_stock_info(code)
+            name = info.get('name', code)
+            industry = info.get('industry', '未知')
+        except Exception:
+            name = code
+            industry = '未知'
+        result.append({'code': code, 'name': name, 'industry': industry})
+
+    _save_stock_pool(result)
+    _sync_stock_pool_to_config()
+
+    return {
+        "status": "success",
+        "data": {"stocks": result, "count": len(result)},
+        "message": f"已同步 {len(result)} 只股票到实盘股票池"
+    }
+
+
+# ============================================================
 # 次日操作建议
 # ============================================================
 
@@ -860,8 +983,27 @@ async def live_scan():
 
 
 @app.post("/api/live/start")
-async def live_start(background_tasks: BackgroundTasks):
-    """启动实盘交易服务"""
+async def live_start(background_tasks: BackgroundTasks,
+                     broker: Optional[str] = None,
+                     mode: Optional[str] = None):
+    """启动实盘交易服务（可指定券商和模式）"""
+    global _live_server
+
+    # 如果指定了不同券商/模式，重建服务实例
+    if broker or mode:
+        if _live_server and _live_server.running:
+            _live_server.stop()
+
+        from live_server import LiveTradingServer
+        from config.settings import LIVE_TRADING_CONFIG
+        import copy
+        config = copy.deepcopy(LIVE_TRADING_CONFIG)
+        if broker:
+            config['broker'] = broker
+        if mode:
+            config['mode'] = mode
+        _live_server = LiveTradingServer(config)
+
     server = get_live_server()
     result = server.start(background=True)
 
@@ -1202,9 +1344,11 @@ if __name__ == "__main__":
     print("=" * 60)
     print()
     print("  本地访问:")
-    print("    回测界面:   http://localhost:8000")
+    print("    主页导航:   http://localhost:8000")
+    print("    回测分析:   http://localhost:8000/app.html")
     print("    实盘交易:   http://localhost:8000/live.html")
     print("    手机看信号: http://localhost:8000/mobile.html")
+    print("    可视化回测: http://localhost:8501")
     print("    API文档:    http://localhost:8000/docs")
     if lan_ip and lan_ip != '127.0.0.1':
         print()

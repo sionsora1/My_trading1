@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime data (auto-generated)
+data_cache/sim_account.json
+data_cache/signals.json
+data_cache/risk_state.json
+data_cache/trade_checklist.json
+data_cache/*_market_data*.json
+
+# Logs
+server.log
+*.log
+
+# Generated reports
+*_daily_report.txt
+*_operations.csv
+*_result.png
+
+# Claude
+.claude/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

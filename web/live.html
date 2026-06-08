@@ -1,13 +1,13 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>实盘交易 - A股量化交易系统</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
         :root {
+            color-scheme: dark;
             --bg: #0d1117;
             --card-bg: #161b22;
             --border: #30363d;
@@ -23,11 +23,18 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
-            background: var(--bg);
-            color: var(--text);
+            background: var(--bg) !important;
+            color: var(--text) !important;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             min-height: 100vh;
         }
+
+        /* 全局覆盖 Bootstrap 深色文字问题 */
+        h1, h2, h3, h4, h5, h6, p, span, div, li, label, small, strong, em, td, th, a {
+            color: inherit;
+        }
+        a { color: var(--blue); }
+        a:hover { color: #79c0ff; }
 
         .navbar {
             background: var(--card-bg);
@@ -88,9 +95,11 @@
         th, td {
             padding: 10px 12px; text-align: left; font-size: 13px;
             border-bottom: 1px solid var(--border);
+            color: var(--text);
         }
-        th { color: var(--text-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+        th { color: var(--text-dim) !important; font-weight: 500; font-size: 11px; text-transform: uppercase; }
         tr:hover td { background: rgba(255,255,255,0.02); }
+        td { color: var(--text); }
 
         .btn {
             padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border);
@@ -107,13 +116,15 @@
         .btn-group { display: flex; gap: 6px; }
 
         input, select, textarea {
-            background: var(--bg); color: var(--text);
-            border: 1px solid var(--border); border-radius: 6px;
+            background: #0d1117 !important; color: #c9d1d9 !important;
+            border: 1px solid var(--border) !important; border-radius: 6px;
             padding: 8px 12px; font-size: 13px; width: 100%;
         }
-        input:focus, select:focus { outline: none; border-color: var(--blue); }
+        input::placeholder, textarea::placeholder { color: #484f58 !important; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: var(--blue) !important; box-shadow: 0 0 0 2px rgba(88,166,255,0.3); }
+        select option { background: #161b22; color: #c9d1d9; }
         .form-group { margin-bottom: 12px; }
-        .form-label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+        .form-label { display: block; font-size: 12px; color: var(--text-dim) !important; margin-bottom: 4px; }
         .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
         .signal-row {
@@ -166,9 +177,10 @@
 <body>
     <!-- Navbar -->
     <nav class="navbar">
-        <a href="/" class="navbar-brand">📈 量化交易系统</a>
+        <a href="/index.html" class="navbar-brand">📈 量化交易系统</a>
         <ul class="navbar-nav">
-            <li><a href="/">回测</a></li>
+            <li><a href="/index.html">🏠 主页</a></li>
+            <li><a href="/app.html">回测</a></li>
             <li><a href="/live.html" class="active">实盘交易</a></li>
             <li><a href="/docs" target="_blank">API文档</a></li>
         </ul>
@@ -202,6 +214,17 @@
                     </button>
                 </div>
                 <div class="btn-group" style="align-items: center; gap: 10px;">
+                    <span class="text-dim" style="font-size: 12px;">券商:</span>
+                    <select id="scanBroker" onchange="updateConfig()" style="width: auto;">
+                        <option value="sim" selected>模拟盘</option>
+                        <option value="ths">同花顺</option>
+                        <option value="qmt">QMT迅投</option>
+                    </select>
+                    <span class="text-dim" style="font-size: 12px;">模式:</span>
+                    <select id="scanMode" onchange="updateConfig()" style="width: auto;">
+                        <option value="semi" selected>半自动</option>
+                        <option value="auto">全自动</option>
+                    </select>
                     <span class="text-dim" style="font-size: 12px;">策略:</span>
                     <select id="scanStrategy" onchange="updateConfig()" style="width: auto;">
                         <option value="all" selected>全部策略</option>
@@ -588,9 +611,11 @@
 
         // ========== Actions ==========
         async function startLive() {
-            const r = await apiPost('/start', {});
+            const broker = document.getElementById('scanBroker').value;
+            const mode = document.getElementById('scanMode').value;
+            const r = await apiPost('/start', { broker, mode });
             if (r.status === 'success') {
-                showToast('实盘服务已启动', 'success');
+                showToast(`实盘服务已启动 (${broker === 'ths' ? '同花顺' : broker === 'qmt' ? 'QMT' : '模拟盘'} / ${mode === 'auto' ? '全自动' : '半自动'})`, 'success');
             } else {
                 showToast('启动失败: ' + (r.data?.message || '未知错误'), 'error');
             }

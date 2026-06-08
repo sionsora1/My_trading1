@@ -221,10 +221,16 @@
     <!-- 导航栏 -->
     <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container-fluid">
+            <a class="navbar-brand" href="/index.html" title="返回主页">
+                <i class="bi bi-house-door"></i>
+            </a>
+            <span class="navbar-text me-2">
+                <a href="/index.html" class="text-white-50 text-decoration-none small">主页</a>
+            </span>
             <a class="navbar-brand" href="#">
                 <i class="bi bi-graph-up-arrow"></i> A股量化交易系统
             </a>
-            <span class="navbar-text">
+            <span class="navbar-text ms-auto">
                 <span class="badge bg-success" id="server-status">服务运行中</span>
             </span>
         </div>
@@ -302,15 +308,23 @@
                             </div>
                         </div>
 
-                        <!-- 导入导出 -->
-                        <div class="d-flex gap-2 mt-2">
-                            <button class="btn btn-outline-primary btn-sm flex-fill" onclick="exportStockPool()">
+                        <!-- 导入导出 + 同步 -->
+                        <div class="d-flex gap-1 mt-2">
+                            <button class="btn btn-outline-primary btn-sm flex-fill" onclick="exportStockPool()" title="导出为JSON文件">
                                 <i class="bi bi-download"></i> 导出
                             </button>
-                            <button class="btn btn-outline-secondary btn-sm flex-fill" onclick="document.getElementById('import-file').click()">
+                            <button class="btn btn-outline-secondary btn-sm flex-fill" onclick="document.getElementById('import-file').click()" title="从JSON/TXT/CSV文件导入">
                                 <i class="bi bi-upload"></i> 导入
                             </button>
-                            <input type="file" id="import-file" accept=".json" style="display:none" onchange="importStockPool(event)">
+                            <input type="file" id="import-file" accept=".json,.txt,.csv" style="display:none" onchange="importStockPool(event)">
+                        </div>
+                        <div class="d-flex gap-1 mt-1">
+                            <button class="btn btn-outline-info btn-sm flex-fill" onclick="syncFromLive()" title="从实盘面板拉取股票池">
+                                <i class="bi bi-arrow-down-circle"></i> 从实盘同步
+                            </button>
+                            <button class="btn btn-outline-success btn-sm flex-fill" onclick="syncToLive()" title="将当前池推送到实盘面板">
+                                <i class="bi bi-arrow-up-circle"></i> 同步到实盘
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -1577,41 +1591,106 @@
             URL.revokeObjectURL(url);
         }
 
+        // ============================================================
+        // 股票池导入 — 支持 JSON / TXT / CSV
+        // ============================================================
+
         function importStockPool(event) {
             const file = event.target.files[0];
             if (!file) return;
 
+            const ext = file.name.split('.').pop().toLowerCase();
             const reader = new FileReader();
+
             reader.onload = function(e) {
-                try {
-                    const data = JSON.parse(e.target.result);
-                    let codes = [];
+                const text = e.target.result;
+                let codes = [];
 
-                    // 兼容两种格式：{codes: [...]} 或 ["600519", ...]
-                    if (Array.isArray(data)) {
-                        codes = data.filter(c => /^\d{6}$/.test(c));
-                    } else if (data.codes && Array.isArray(data.codes)) {
-                        codes = data.codes.filter(c => /^\d{6}$/.test(c));
-                    } else {
-                        alert('JSON格式不正确，需要 {"codes": ["600519", ...]} 或 ["600519", ...]');
+                if (ext === 'json') {
+                    // JSON 格式: {"codes": [...]} 或 [...]
+                    try {
+                        const data = JSON.parse(text);
+                        if (Array.isArray(data)) {
+                            codes = data.filter(c => /^\d{6}$/.test(String(c)));
+                        } else if (data.codes && Array.isArray(data.codes)) {
+                            codes = data.codes.filter(c => /^\d{6}$/.test(String(c)));
+                        } else {
+                            alert('JSON格式不正确，需要 {"codes": [...]} 或 [...]');
+                            return;
+                        }
+                    } catch (err) {
+                        alert('JSON解析失败: ' + err.message);
                         return;
                     }
-
-                    if (codes.length === 0) {
-                        alert('未找到有效的6位股票代码');
-                        return;
+                } else {
+                    // TXT / CSV 格式: 每行一个代码，或 代码,名称,行业
+                    const lines = text.split(/[\r\n]+/).filter(l => l.trim());
+                    for (const line of lines) {
+                        // 跳过 CSV 表头
+                        if (/^(代码|code|股票|名称)/i.test(line.trim())) continue;
+                        const parts = line.split(/[,\t]/);
+                        const code = parts[0].trim();
+                        if (/^\d{6}$/.test(code)) {
+                            codes.push(code);
+                        }
                     }
-
-                    stockPool = codes;
-                    renderStockTags();
-                    saveLastUsedPool();
-                    alert(`成功导入 ${codes.length} 只股票`);
-                } catch (err) {
-                    alert('文件解析失败: ' + err.message);
                 }
+
+                if (codes.length === 0) {
+                    alert('未找到有效的6位股票代码');
+                    return;
+                }
+
+                stockPool = codes;
+                renderStockTags();
+                saveLastUsedPool();
+                alert(`成功导入 ${codes.length} 只股票`);
             };
             reader.readAsText(file);
-            event.target.value = '';  // 重置文件选择
+            event.target.value = '';
+        }
+
+        // ============================================================
+        // 双向同步：回测 ↔ 实盘
+        // ============================================================
+
+        async function syncFromLive() {
+            try {
+                const resp = await fetch(`${API_BASE}/pool/sync-from-live`);
+                const data = await resp.json();
+                if (data.status !== 'success' || !data.data.codes || data.data.codes.length === 0) {
+                    alert('实盘股票池为空，请先在实盘面板添加股票');
+                    return;
+                }
+                stockPool = data.data.codes;
+                renderStockTags();
+                saveLastUsedPool();
+                alert(`已从实盘同步 ${data.data.count} 只股票`);
+            } catch (err) {
+                alert('同步失败: ' + err.message);
+            }
+        }
+
+        async function syncToLive() {
+            if (stockPool.length === 0) {
+                alert('当前股票池为空');
+                return;
+            }
+            try {
+                const resp = await fetch(`${API_BASE}/pool/sync-to-live`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ codes: stockPool })
+                });
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    alert(data.message || `已同步 ${stockPool.length} 只股票到实盘`);
+                } else {
+                    alert('同步失败: ' + (data.message || '未知错误'));
+                }
+            } catch (err) {
+                alert('同步失败: ' + err.message);
+            }
         }
 
         // ============================================================

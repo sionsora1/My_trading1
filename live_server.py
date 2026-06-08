@@ -768,8 +768,8 @@ def main():
     parser = argparse.ArgumentParser(description='A股量化实盘交易服务')
     parser.add_argument('--mode', choices=['auto', 'semi'], default='semi',
                         help='交易模式（auto=全自动, semi=半自动）')
-    parser.add_argument('--broker', choices=['sim', 'qmt'], default='sim',
-                        help='券商（sim=模拟盘, qmt=迅投QMT）')
+    parser.add_argument('--broker', choices=['sim', 'qmt', 'ths'], default='sim',
+                        help='券商（sim=模拟盘, qmt=迅投QMT, ths=同花顺）')
     parser.add_argument('--interval', type=int, default=60,
                         help='扫描间隔（秒），默认60秒')
     parser.add_argument('--oneshot', action='store_true',

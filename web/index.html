@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A股量化交易系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #f0f2f5;
+            --card-bg: #ffffff;
+            --text: #1a1a2e;
+            --text-dim: #6b7280;
+            --blue: #1f77b4;
+            --blue-dark: #1a237e;
+            --green: #00c853;
+            --red: #ff1744;
+            --orange: #ff9800;
+            --purple: #7c3aed;
+            --teal: #0d9488;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            min-height: 100vh;
+            color: var(--text);
+        }
+
+        /* ── Hero ── */
+        .hero {
+            background: linear-gradient(135deg, #0f0c29, #1a237e, #1565c0);
+            padding: 60px 24px 50px;
+            text-align: center;
+            color: white;
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+        }
+        .hero-content { position: relative; z-index: 1; }
+        .hero h1 {
+            font-size: 2.5rem; font-weight: 800; letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+        .hero .subtitle {
+            font-size: 1.1rem; opacity: 0.85; margin-bottom: 6px;
+        }
+        .hero .status-row {
+            display: flex; justify-content: center; gap: 20px;
+            margin-top: 20px; flex-wrap: wrap;
+        }
+        .hero .status-badge {
+            display: flex; align-items: center; gap: 6px;
+            padding: 6px 16px; border-radius: 20px;
+            font-size: 13px; font-weight: 500;
+            background: rgba(255,255,255,0.15);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            display: inline-block;
+        }
+        .dot-on { background: #3fb950; box-shadow: 0 0 6px #3fb950; animation: pulse 2s infinite; }
+        .dot-off { background: #8b949e; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        /* ── Container ── */
+        .container-main {
+            max-width: 1100px; margin: -20px auto 40px;
+            padding: 0 24px; position: relative; z-index: 2;
+        }
+
+        /* ── Section titles ── */
+        .section-title {
+            font-size: 1.1rem; font-weight: 700; color: var(--text-dim);
+            margin: 32px 0 16px; padding-left: 4px;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .section-title::after {
+            content: ''; flex: 1; height: 1px;
+            background: linear-gradient(to right, #d1d5db, transparent);
+        }
+
+        /* ── Cards ── */
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+        }
+
+        .nav-card {
+            background: var(--card-bg);
+            border-radius: 12px; border: 1px solid #e5e7eb;
+            padding: 0; overflow: hidden;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            text-decoration: none; color: inherit;
+            display: flex; flex-direction: column;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .nav-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+            border-color: #93c5fd;
+        }
+
+        .nav-card .card-accent {
+            height: 4px;
+        }
+        .accent-blue { background: linear-gradient(90deg, #1f77b4, #58a6ff); }
+        .accent-green { background: linear-gradient(90deg, #059669, #34d399); }
+        .accent-purple { background: linear-gradient(90deg, #6d28d9, #a78bfa); }
+        .accent-teal { background: linear-gradient(90deg, #0f766e, #2dd4bf); }
+        .accent-orange { background: linear-gradient(90deg, #ea580c, #fb923c); }
+
+        .nav-card .card-body { padding: 20px 24px 24px; flex: 1; }
+        .nav-card .card-icon {
+            width: 48px; height: 48px; border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 24px; margin-bottom: 14px;
+        }
+        .icon-blue { background: #eff6ff; color: #1f77b4; }
+        .icon-green { background: #ecfdf5; color: #059669; }
+        .icon-purple { background: #f5f3ff; color: #6d28d9; }
+        .icon-teal { background: #f0fdfa; color: #0f766e; }
+        .icon-orange { background: #fff7ed; color: #ea580c; }
+
+        .nav-card .card-title {
+            font-size: 1.1rem; font-weight: 700; margin-bottom: 6px;
+        }
+        .nav-card .card-desc {
+            font-size: 0.88rem; color: var(--text-dim); line-height: 1.5;
+            margin-bottom: 12px;
+        }
+        .nav-card .card-tags {
+            display: flex; flex-wrap: wrap; gap: 6px;
+        }
+        .nav-card .tag {
+            font-size: 0.72rem; padding: 2px 10px; border-radius: 12px;
+            font-weight: 500;
+        }
+        .tag-data { background: #eff6ff; color: #1f77b4; }
+        .tag-trade { background: #ecfdf5; color: #059669; }
+        .tag-chart { background: #f5f3ff; color: #6d28d9; }
+        .tag-api { background: #fef3c7; color: #b45309; }
+        .tag-mobile { background: #fce7f3; color: #be185d; }
+
+        .nav-card .card-footer-row {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-top: auto; padding-top: 12px;
+            border-top: 1px solid #f3f4f6; font-size: 0.82rem;
+            color: var(--text-dim);
+        }
+        .nav-card .card-footer-row .arrow {
+            font-size: 1.1rem; color: var(--blue);
+            transition: transform 0.2s;
+        }
+        .nav-card:hover .card-footer-row .arrow {
+            transform: translateX(4px);
+        }
+
+        /* ── Info bar ── */
+        .info-bar {
+            background: var(--card-bg); border-radius: 12px; border: 1px solid #e5e7eb;
+            padding: 16px 24px; display: flex; justify-content: space-between;
+            align-items: center; flex-wrap: wrap; gap: 12px;
+            margin-bottom: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .info-bar .info-item {
+            display: flex; align-items: center; gap: 8px; font-size: 0.88rem;
+        }
+        .info-bar .info-label { color: var(--text-dim); }
+        .info-bar .info-value { font-weight: 600; }
+
+        /* ── Responsive ── */
+        @media (max-width: 640px) {
+            .hero h1 { font-size: 1.6rem; }
+            .hero { padding: 36px 16px 30px; }
+            .cards-grid { grid-template-columns: 1fr; }
+            .container-main { padding: 0 12px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- Hero -->
+<!-- ═══════════════════════════════════════════ -->
+<div class="hero">
+    <div class="hero-content">
+        <h1>📈 A股量化交易系统</h1>
+        <div class="subtitle">多因子选股 · 策略回测 · 实盘交易 · 风控管理</div>
+        <div class="status-row">
+            <span class="status-badge" id="badge-backend">
+                <span class="status-dot dot-on" id="dot-backend"></span> 后端服务
+            </span>
+            <span class="status-badge" id="badge-streamlit">
+                <span class="status-dot dot-off" id="dot-streamlit"></span> 可视化
+            </span>
+            <span class="status-badge" id="badge-live">
+                <span class="status-dot dot-off" id="dot-live"></span> 实盘服务
+            </span>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- Main Content -->
+<!-- ═══════════════════════════════════════════ -->
+<div class="container-main">
+
+    <!-- Info bar -->
+    <div class="info-bar">
+        <div class="info-item">
+            <i class="bi bi-hdd-stack text-primary"></i>
+            <span class="info-label">API 地址:</span>
+            <span class="info-value">localhost:8000</span>
+        </div>
+        <div class="info-item">
+            <i class="bi bi-display"></i>
+            <span class="info-label">可视化:</span>
+            <span class="info-value">localhost:8501</span>
+        </div>
+        <div class="info-item">
+            <i class="bi bi-journal-code"></i>
+            <span class="info-label">API 文档:</span>
+            <a href="/docs" target="_blank" class="info-value" style="color:var(--blue);">Swagger UI</a>
+        </div>
+    </div>
+
+    <!-- ── 核心功能 ── -->
+    <div class="section-title">🎯 核心功能</div>
+    <div class="cards-grid">
+
+        <!-- 回测分析 -->
+        <a href="/app.html" class="nav-card">
+            <div class="card-accent accent-blue"></div>
+            <div class="card-body">
+                <div class="card-icon icon-blue"><i class="bi bi-graph-up-arrow"></i></div>
+                <div class="card-title">策略回测分析</div>
+                <div class="card-desc">
+                    8因子选股、动量、均值回归、价值、质量等9种策略回测。
+                    配置股票池与参数，查看净值曲线和每日操作明细。
+                </div>
+                <div class="card-tags">
+                    <span class="tag tag-data">多因子</span>
+                    <span class="tag tag-chart">净值曲线</span>
+                    <span class="tag tag-data">市场分析</span>
+                </div>
+                <div class="card-footer-row">
+                    <span>app.html</span>
+                    <span class="arrow"><i class="bi bi-arrow-right"></i></span>
+                </div>
+            </div>
+        </a>
+
+        <!-- 实盘交易 -->
+        <a href="/live.html" class="nav-card">
+            <div class="card-accent accent-green"></div>
+            <div class="card-body">
+                <div class="card-icon icon-green"><i class="bi bi-wallet2"></i></div>
+                <div class="card-title">实盘交易面板</div>
+                <div class="card-desc">
+                    模拟盘/实盘(QMT)交易操作。账户总览、持仓管理、
+                    手动下单、信号确认、风控状态一目了然。
+                </div>
+                <div class="card-tags">
+                    <span class="tag tag-trade">模拟盘</span>
+                    <span class="tag tag-trade">QMT实盘</span>
+                    <span class="tag tag-api">风控</span>
+                </div>
+                <div class="card-footer-row">
+                    <span>live.html</span>
+                    <span class="arrow"><i class="bi bi-arrow-right"></i></span>
+                </div>
+            </div>
+        </a>
+
+        <!-- 可视化回测 -->
+        <a href="/vis.html" class="nav-card" id="card-streamlit">
+            <div class="card-accent accent-purple"></div>
+            <div class="card-body">
+                <div class="card-icon icon-purple"><i class="bi bi-bar-chart-fill"></i></div>
+                <div class="card-title">Streamlit 可视化回测</div>
+                <div class="card-desc">
+                    独立 Streamlit 应用，交互式图表展示净值曲线、
+                    回撤曲线、每日操作统计，支持导出报告。
+                </div>
+                <div class="card-tags">
+                    <span class="tag tag-chart">Plotly</span>
+                    <span class="tag tag-data">交互图表</span>
+                    <span class="tag tag-mobile">导出报告</span>
+                </div>
+                <div class="card-footer-row">
+                    <span>localhost:8501</span>
+                    <span class="arrow"><i class="bi bi-box-arrow-up-right"></i></span>
+                </div>
+            </div>
+        </a>
+
+        <!-- 手机信号 -->
+        <a href="/mobile.html" class="nav-card">
+            <div class="card-accent accent-orange"></div>
+            <div class="card-body">
+                <div class="card-icon icon-orange"><i class="bi bi-phone"></i></div>
+                <div class="card-title">移动端信号面板</div>
+                <div class="card-desc">
+                    手机优化的交易信号页面。随时随地查看策略信号、
+                    一键确认/跳过、执行清单跟踪。
+                </div>
+                <div class="card-tags">
+                    <span class="tag tag-mobile">移动端</span>
+                    <span class="tag tag-trade">信号确认</span>
+                    <span class="tag tag-api">执行清单</span>
+                </div>
+                <div class="card-footer-row">
+                    <span>mobile.html</span>
+                    <span class="arrow"><i class="bi bi-arrow-right"></i></span>
+                </div>
+            </div>
+        </a>
+
+        <!-- API 文档 -->
+        <a href="/docs" target="_blank" class="nav-card">
+            <div class="card-accent accent-teal"></div>
+            <div class="card-body">
+                <div class="card-icon icon-teal"><i class="bi bi-code-slash"></i></div>
+                <div class="card-title">REST API 文档</div>
+                <div class="card-desc">
+                    Swagger UI 交互式 API 文档。40+ 接口覆盖回测、
+                    实盘、信号、账户、股票池等全部功能，可直接调试。
+                </div>
+                <div class="card-tags">
+                    <span class="tag tag-api">Swagger</span>
+                    <span class="tag tag-data">FastAPI</span>
+                    <span class="tag tag-api">40+ 接口</span>
+                </div>
+                <div class="card-footer-row">
+                    <span>/docs</span>
+                    <span class="arrow"><i class="bi bi-box-arrow-up-right"></i></span>
+                </div>
+            </div>
+        </a>
+
+    </div>
+
+    <!-- ── 快捷操作 ── -->
+    <div class="section-title">⚡ 快捷操作</div>
+    <div class="cards-grid" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));">
+
+        <div class="nav-card" onclick="quickAction('scan')" style="cursor:pointer;">
+            <div class="card-accent accent-green"></div>
+            <div class="card-body" style="text-align:center;">
+                <div class="card-icon icon-green" style="margin:0 auto 12px;">
+                    <i class="bi bi-search"></i>
+                </div>
+                <div class="card-title" style="font-size:1rem;">立即扫描</div>
+                <div class="card-desc" style="font-size:0.8rem;">触发一次策略扫描生成信号</div>
+            </div>
+        </div>
+
+        <div class="nav-card" onclick="quickAction('reset')" style="cursor:pointer;">
+            <div class="card-accent accent-orange"></div>
+            <div class="card-body" style="text-align:center;">
+                <div class="card-icon icon-orange" style="margin:0 auto 12px;">
+                    <i class="bi bi-arrow-counterclockwise"></i>
+                </div>
+                <div class="card-title" style="font-size:1rem;">重置模拟账户</div>
+                <div class="card-desc" style="font-size:0.8rem;">清空持仓恢复到初始资金</div>
+            </div>
+        </div>
+
+        <div class="nav-card" onclick="window.open('/docs','_blank')" style="cursor:pointer;">
+            <div class="card-accent accent-blue"></div>
+            <div class="card-body" style="text-align:center;">
+                <div class="card-icon icon-blue" style="margin:0 auto 12px;">
+                    <i class="bi bi-download"></i>
+                </div>
+                <div class="card-title" style="font-size:1rem;">导出股票池</div>
+                <div class="card-desc" style="font-size:0.8rem;">JSON格式导出当前配置</div>
+            </div>
+        </div>
+
+        <div class="nav-card" onclick="quickAction('start')" style="cursor:pointer;">
+            <div class="card-accent accent-teal"></div>
+            <div class="card-body" style="text-align:center;">
+                <div class="card-icon icon-teal" style="margin:0 auto 12px;">
+                    <i class="bi bi-play-circle"></i>
+                </div>
+                <div class="card-title" style="font-size:1rem;">启动实盘服务</div>
+                <div class="card-desc" style="font-size:0.8rem;">定时策略扫描与交易</div>
+            </div>
+        </div>
+
+    </div>
+
+</div>
+
+<script>
+    // ═══════════════════════════════════════════
+    // Status check
+    // ═══════════════════════════════════════════
+
+    async function checkStatus() {
+        // Backend (this server)
+        try {
+            const r = await fetch('/api');
+            if (r.ok) {
+                document.getElementById('dot-backend').className = 'status-dot dot-on';
+                document.getElementById('badge-backend').style.opacity = '1';
+            }
+        } catch(e) {
+            document.getElementById('dot-backend').className = 'status-dot dot-off';
+            document.getElementById('badge-backend').style.opacity = '0.6';
+        }
+
+        // Streamlit (port 8501)
+        try {
+            const r = await fetch('http://localhost:8501/healthz', {mode:'no-cors'});
+            document.getElementById('dot-streamlit').className = 'status-dot dot-on';
+            document.getElementById('badge-streamlit').style.opacity = '1';
+            // Make the streamlit card link active
+            const card = document.getElementById('card-streamlit');
+            card.href = 'http://localhost:8501';
+            card.target = '_blank';
+        } catch(e) {
+            document.getElementById('dot-streamlit').className = 'status-dot dot-off';
+            document.getElementById('badge-streamlit').style.opacity = '0.6';
+            // Point to a page that explains streamlit needs to be started
+            document.getElementById('card-streamlit').href = '/vis.html';
+            document.getElementById('card-streamlit').target = '_self';
+        }
+
+        // Live trading
+        try {
+            const r = await fetch('/api/live/status');
+            const d = await r.json();
+            if (d.status === 'success' && d.data) {
+                document.getElementById('dot-live').className = 'status-dot ' +
+                    (d.data.running ? 'dot-on' : 'dot-off');
+                document.getElementById('badge-live').style.opacity = '1';
+            }
+        } catch(e) {
+            document.getElementById('dot-live').className = 'status-dot dot-off';
+            document.getElementById('badge-live').style.opacity = '0.6';
+        }
+    }
+
+    async function quickAction(action) {
+        switch(action) {
+            case 'scan':
+                try {
+                    const r = await fetch('/api/live/scan', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                    const d = await r.json();
+                    if (d.status === 'success') {
+                        alert('扫描完成！生成 ' + (d.data?.signals?.length || 0) + ' 条信号');
+                    } else {
+                        alert('扫描失败，请先启动实盘服务');
+                    }
+                } catch(e) {
+                    alert('实盘服务未启动，请先到实盘交易面板启动服务');
+                }
+                break;
+            case 'reset':
+                if (!confirm('确定要重置模拟账户吗？所有持仓将被清空。')) return;
+                try {
+                    const r = await fetch('/api/live/reset', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                    const d = await r.json();
+                    alert(d.status === 'success' ? '账户已重置' : '重置失败');
+                } catch(e) {
+                    alert('重置失败，实盘服务未启动');
+                }
+                break;
+            case 'start':
+                try {
+                    const r = await fetch('/api/live/start', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                    const d = await r.json();
+                    if (d.status === 'success') {
+                        alert('实盘服务已启动');
+                        checkStatus();
+                    } else {
+                        alert('启动失败，请到实盘交易面板手动启动');
+                    }
+                } catch(e) {
+                    alert('启动失败');
+                }
+                break;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', checkStatus);
+</script>
+</body>
+</html>

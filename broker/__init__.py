@@ -7,6 +7,7 @@ from .base import BaseBroker, OrderSide, OrderType, OrderStatus
 from .base import OrderRequest, OrderResult, AccountInfo, PositionInfo, Signal, DailyRiskLimit
 from .sim_broker import SimBroker
 from .qmt_broker import QMTBroker
+from .ths_broker import THSBroker
 from .notify import SignalNotifier
 from .risk_manager import RiskManager
 
@@ -25,6 +26,13 @@ BROKER_REGISTRY = {
         'description': '通过迅投 QMT 连接真实券商账户（需安装 xtquant）',
         'category': 'live',
         'features': ['实盘', '自动交易'],
+    },
+    'ths': {
+        'class': THSBroker,
+        'name': '同花顺',
+        'description': '通过同花顺 PC 客户端自动交易（需安装 easytrader + 同花顺客户端）',
+        'category': 'live',
+        'features': ['实盘', '自动交易', '同花顺'],
     },
 }
 

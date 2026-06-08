@@ -1,27 +1,277 @@
 [
   {
-    "code": "600519",
-    "name": "贵州茅台",
-    "industry": ""
+    "code": "603688",
+    "name": "石英股份",
+    "industry": "未知"
   },
   {
-    "code": "000858",
-    "name": "五粮液",
-    "industry": ""
+    "code": "603256",
+    "name": "宏和科技",
+    "industry": "未知"
   },
   {
-    "code": "002415",
-    "name": "海康威视",
-    "industry": ""
+    "code": "002436",
+    "name": "兴森科技",
+    "industry": "未知"
   },
   {
-    "code": "300750",
-    "name": "宁德时代",
-    "industry": ""
+    "code": "600176",
+    "name": "中国巨石",
+    "industry": "未知"
   },
   {
-    "code": "002230",
-    "name": "科大讯飞",
+    "code": "601877",
+    "name": "正泰电器",
+    "industry": "未知"
+  },
+  {
+    "code": "000831",
+    "name": "中国稀土",
+    "industry": "未知"
+  },
+  {
+    "code": "000425",
+    "name": "徐工机械",
+    "industry": "未知"
+  },
+  {
+    "code": "603112",
+    "name": "华翔股份",
+    "industry": "未知"
+  },
+  {
+    "code": "002364",
+    "name": "中恒电气",
+    "industry": "未知"
+  },
+  {
+    "code": "603658",
+    "name": "安图生物",
+    "industry": "未知"
+  },
+  {
+    "code": "601869",
+    "name": "长飞光纤",
+    "industry": "未知"
+  },
+  {
+    "code": "002714",
+    "name": "牧原股份",
+    "industry": "未知"
+  },
+  {
+    "code": "600313",
+    "name": "农发种业",
+    "industry": "未知"
+  },
+  {
+    "code": "601288",
+    "name": "农业银行",
+    "industry": "未知"
+  },
+  {
+    "code": "002261",
+    "name": "拓维信息",
+    "industry": "未知"
+  },
+  {
+    "code": "603496",
+    "name": "恒为科技",
+    "industry": "未知"
+  },
+  {
+    "code": "002843",
+    "name": "泰嘉股份",
+    "industry": "未知"
+  },
+  {
+    "code": "002897",
+    "name": "意华股份",
+    "industry": "未知"
+  },
+  {
+    "code": "600589",
+    "name": "大位科技",
+    "industry": "未知"
+  },
+  {
+    "code": "002335",
+    "name": "科华数据",
+    "industry": "未知"
+  },
+  {
+    "code": "603163",
+    "name": "圣晖集成",
+    "industry": "未知"
+  },
+  {
+    "code": "001337",
+    "name": "四川黄金",
+    "industry": "未知"
+  },
+  {
+    "code": "600988",
+    "name": "赤峰黄金",
+    "industry": "未知"
+  },
+  {
+    "code": "601899",
+    "name": "紫金矿业",
+    "industry": "未知"
+  },
+  {
+    "code": "603993",
+    "name": "洛阳钼业",
+    "industry": "未知"
+  },
+  {
+    "code": "600362",
+    "name": "江西铜业",
+    "industry": "未知"
+  },
+  {
+    "code": "600531",
+    "name": "豫光金铅",
+    "industry": "未知"
+  },
+  {
+    "code": "000630",
+    "name": "铜陵有色",
+    "industry": "未知"
+  },
+  {
+    "code": "600584",
+    "name": "长电科技",
+    "industry": "未知"
+  },
+  {
+    "code": "002156",
+    "name": "通富微电",
+    "industry": "未知"
+  },
+  {
+    "code": "002112",
+    "name": "三变科技",
+    "industry": "未知"
+  },
+  {
+    "code": "002498",
+    "name": "汉缆股份",
+    "industry": "未知"
+  },
+  {
+    "code": "300136",
+    "name": "信维通信",
+    "industry": "未知"
+  },
+  {
+    "code": "000681",
+    "name": "视觉中国",
+    "industry": "未知"
+  },
+  {
+    "code": "002400",
+    "name": "省广集团",
+    "industry": "未知"
+  },
+  {
+    "code": "002465",
+    "name": "海格通信",
+    "industry": "未知"
+  },
+  {
+    "code": "600611",
+    "name": "大众交通",
+    "industry": "未知"
+  },
+  {
+    "code": "000981",
+    "name": "山子高科",
+    "industry": "未知"
+  },
+  {
+    "code": "002131",
+    "name": "利欧股份",
+    "industry": "未知"
+  },
+  {
+    "code": "002759",
+    "name": "天际股份",
+    "industry": "未知"
+  },
+  {
+    "code": "603667",
+    "name": "五洲新春",
+    "industry": "未知"
+  },
+  {
+    "code": "002050",
+    "name": "三花智控",
+    "industry": "未知"
+  },
+  {
+    "code": "603929",
+    "name": "亚翔集成",
+    "industry": "未知"
+  },
+  {
+    "code": "603259",
+    "name": "药明康德",
+    "industry": "未知"
+  },
+  {
+    "code": "002594",
+    "name": "比亚迪",
+    "industry": "未知"
+  },
+  {
+    "code": "603629",
+    "name": "利通电子",
+    "industry": "未知"
+  },
+  {
+    "code": "688041",
+    "name": "海光信息",
+    "industry": "未知"
+  },
+  {
+    "code": "600673",
+    "name": "东阳光",
+    "industry": "未知"
+  },
+  {
+    "code": "603881",
+    "name": "数据港",
+    "industry": "未知"
+  },
+  {
+    "code": "002837",
+    "name": "英维克",
+    "industry": "未知"
+  },
+  {
+    "code": "002281",
+    "name": "光迅科技",
+    "industry": "未知"
+  },
+  {
+    "code": "600522",
+    "name": "中天科技",
+    "industry": "未知"
+  },
+  {
+    "code": "600487",
+    "name": "亨通光电",
+    "industry": "未知"
+  },
+  {
+    "code": "603083",
+    "name": "剑桥科技",
+    "industry": "未知"
+  },
+  {
+    "code": "603986",
+    "name": "兆易创新",
     "industry": "未知"
   }
 ]
