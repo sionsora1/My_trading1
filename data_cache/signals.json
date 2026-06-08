@@ -1,0 +1,148 @@
+{
+  "pending": [
+    {
+      "ts_code": "600519",
+      "name": "贵州茅台",
+      "signal": "BUY",
+      "weight": 0,
+      "reason": "test",
+      "price": 0.0,
+      "strategy": "manual",
+      "create_time": "2026-06-08 11:54:26",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "600519",
+      "name": "贵州茅台",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "8因子选股（得分0.17，行业:未知）",
+      "price": 1272.86,
+      "strategy": "eight_factor",
+      "create_time": "2026-06-08 17:45:00",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "300750",
+      "name": "宁德时代",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "8因子选股（得分0.04，行业:未知）",
+      "price": 403.0,
+      "strategy": "eight_factor",
+      "create_time": "2026-06-08 17:45:00",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "002371",
+      "name": "北方华创",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "8因子选股（得分-0.57，行业:未知）",
+      "price": 603.36,
+      "strategy": "eight_factor",
+      "create_time": "2026-06-08 17:45:00",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "002230",
+      "name": "科大讯飞",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "8因子选股（得分-0.21，行业:未知）",
+      "price": 46.03,
+      "strategy": "eight_factor",
+      "create_time": "2026-06-08 17:45:00",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "000858",
+      "name": "五 粮 液",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "8因子选股（得分0.19，行业:未知）",
+      "price": 81.08,
+      "strategy": "eight_factor",
+      "create_time": "2026-06-08 15:44:35",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "300015",
+      "name": "爱尔眼科",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "8因子选股（得分0.20，行业:未知）",
+      "price": 8.54,
+      "strategy": "eight_factor",
+      "create_time": "2026-06-08 17:45:00",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "002415",
+      "name": "海康威视",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "8因子选股（得分0.11，行业:未知）",
+      "price": 31.28,
+      "strategy": "eight_factor",
+      "create_time": "2026-06-08 17:45:00",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "002410",
+      "name": "广联达",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "8因子选股（得分-0.04，行业:未知）",
+      "price": 9.47,
+      "strategy": "eight_factor",
+      "create_time": "2026-06-08 17:45:00",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "000858",
+      "name": "五 粮 液",
+      "signal": "SELL",
+      "weight": 0,
+      "reason": "止损（亏损-37.5%）；趋势破坏（MA5下穿MA20）",
+      "price": 81.08,
+      "strategy": "eight_factor",
+      "create_time": "2026-06-08 17:45:00",
+      "confirmed": false,
+      "executed": false
+    }
+  ],
+  "history": [
+    {
+      "ts_code": "601398",
+      "name": "工商银行",
+      "signal": "BUY",
+      "reason": "8因子选股（得分0.10，行业:未知）",
+      "strategy": "eight_factor",
+      "confirmed": true,
+      "executed": true,
+      "order_id": "SIM_20260608_000001",
+      "time": "2026-06-08 16:42:52",
+      "action_time": "2026-06-08 16:43:06"
+    }
+  ],
+  "stats": {
+    "pending": 10,
+    "buy_signals": 9,
+    "sell_signals": 1,
+    "hold_signals": 0,
+    "confirmed": 0,
+    "unconfirmed": 10,
+    "total_history": 1
+  },
+  "last_update": "2026-06-08 17:45:00"
+}

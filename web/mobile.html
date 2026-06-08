@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>量化交易信号</title>
+    <style>
+        :root {
+            --bg: #0d1117; --card: #161b22; --border: #30363d;
+            --text: #c9d1d9; --dim: #8b949e;
+            --green: #3fb950; --red: #f85149; --blue: #58a6ff;
+            --yellow: #d2991d;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg); color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            min-height: 100vh; padding-bottom: 20px;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1a237e, #1565c0);
+            padding: 16px 20px; text-align: center;
+            position: sticky; top: 0; z-index: 10;
+        }
+        .header h1 { font-size: 18px; font-weight: 600; }
+        .header .sub { font-size: 12px; opacity: 0.7; margin-top: 4px; }
+
+        .stats {
+            display: flex; gap: 8px; padding: 12px 16px;
+            overflow-x: auto; white-space: nowrap;
+        }
+        .stat {
+            flex: 1; min-width: 70px; text-align: center;
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 8px; padding: 10px 8px;
+        }
+        .stat-val { font-size: 20px; font-weight: 700; }
+        .stat-lbl { font-size: 10px; color: var(--dim); margin-top: 2px; }
+
+        .container { padding: 0 12px; }
+
+        .signal-card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 10px; padding: 16px; margin-bottom: 12px;
+            border-left: 4px solid var(--border);
+        }
+        .signal-buy { border-left-color: var(--green); }
+        .signal-sell { border-left-color: var(--red); }
+
+        .signal-top { display: flex; justify-content: space-between; align-items: flex-start; }
+        .signal-code { font-size: 20px; font-weight: 700; letter-spacing: 1px; }
+        .signal-name { font-size: 13px; color: var(--dim); }
+        .signal-action {
+            font-size: 14px; font-weight: 700; padding: 4px 12px;
+            border-radius: 20px;
+        }
+        .action-buy { background: rgba(63,185,80,0.15); color: var(--green); }
+        .action-sell { background: rgba(248,81,73,0.15); color: var(--red); }
+
+        .signal-body { margin-top: 12px; }
+        .signal-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+        .signal-row .lbl { color: var(--dim); }
+        .signal-row .val { font-weight: 500; text-align: right; }
+
+        .signal-reason {
+            margin-top: 10px; padding: 8px 10px; background: rgba(210,153,29,0.1);
+            border-radius: 6px; font-size: 12px; color: var(--yellow);
+            line-height: 1.5;
+        }
+        .signal-strategy {
+            font-size: 10px; color: var(--dim); margin-top: 8px;
+        }
+
+        .btn-row { display: flex; gap: 8px; margin-top: 12px; }
+        .btn {
+            flex: 1; padding: 12px; border-radius: 8px; border: none;
+            font-size: 15px; font-weight: 600; cursor: pointer;
+            transition: all 0.15s;
+        }
+        .btn-exec {
+            background: var(--green); color: white;
+        }
+        .btn-exec:active { background: #2ea043; }
+        .btn-skip {
+            background: transparent; color: var(--dim);
+            border: 1px solid var(--border);
+        }
+        .btn-skip:active { background: rgba(255,255,255,0.05); }
+
+        .executed-badge {
+            display: inline-block; padding: 4px 12px; border-radius: 20px;
+            font-size: 13px; font-weight: 600;
+        }
+        .badge-ok { background: rgba(63,185,80,0.15); color: var(--green); }
+        .badge-skip { background: rgba(139,148,158,0.15); color: var(--dim); }
+
+        .empty { text-align: center; padding: 60px 20px; color: var(--dim); }
+        .empty-icon { font-size: 48px; margin-bottom: 16px; }
+        .empty-text { font-size: 16px; }
+
+        .account-bar {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 10px; padding: 14px 16px; margin-bottom: 12px;
+            display: flex; justify-content: space-around; text-align: center;
+        }
+        .acct-item .val { font-size: 16px; font-weight: 700; }
+        .acct-item .lbl { font-size: 10px; color: var(--dim); }
+
+        .toast {
+            position: fixed; top: 12px; left: 12px; right: 12px; z-index: 99;
+            padding: 12px 16px; border-radius: 8px; text-align: center;
+            font-size: 14px; font-weight: 600; transform: translateY(-120px);
+            transition: transform 0.3s ease;
+        }
+        .toast.show { transform: translateY(0); }
+        .toast-ok { background: #238636; color: white; }
+        .toast-err { background: #da3633; color: white; }
+
+        .refresh-bar {
+            display: flex; justify-content: center; align-items: center;
+            gap: 8px; padding: 12px; font-size: 12px; color: var(--dim);
+        }
+
+        .tabs {
+            display: flex; gap: 2px; padding: 0 12px; margin-bottom: 12px;
+        }
+        .tab {
+            flex: 1; text-align: center; padding: 10px; font-size: 13px;
+            font-weight: 500; color: var(--dim); border-bottom: 2px solid transparent;
+            cursor: pointer;
+        }
+        .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .checklist-item {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 8px; padding: 12px; margin-bottom: 8px;
+            display: flex; align-items: center; gap: 12px;
+        }
+        .ck-status {
+            width: 28px; height: 28px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 12px; font-weight: 700; flex-shrink: 0;
+        }
+        .ck-pending { background: rgba(88,166,255,0.15); color: var(--blue); }
+        .ck-done { background: rgba(63,185,80,0.15); color: var(--green); }
+        .ck-skip { background: rgba(139,148,158,0.15); color: var(--dim); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>量化交易信号</h1>
+        <div class="sub" id="headerTime">--</div>
+    </div>
+
+    <!-- Account -->
+    <div class="container" style="margin-top:12px;">
+        <div class="account-bar">
+            <div class="acct-item">
+                <div class="val" id="acctAssets">--</div>
+                <div class="lbl">总资产</div>
+            </div>
+            <div class="acct-item">
+                <div class="val" id="acctCash">--</div>
+                <div class="lbl">可用</div>
+            </div>
+            <div class="acct-item">
+                <div class="val" id="acctPos">--</div>
+                <div class="lbl">持仓</div>
+            </div>
+            <div class="acct-item">
+                <div class="val" id="acctDaily">--</div>
+                <div class="lbl">当日</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('signals')">交易信号 <span id="signalTabCount"></span></div>
+        <div class="tab" onclick="switchTab('checklist')">执行清单 <span id="ckTabCount"></span></div>
+    </div>
+
+    <!-- Signals Tab -->
+    <div class="container tab-content active" id="tabSignals">
+        <div id="signalsContainer"></div>
+        <div class="empty" id="signalsEmpty">
+            <div class="empty-icon">📡</div>
+            <div class="empty-text">暂无交易信号</div>
+            <div style="font-size:12px;margin-top:8px;">点击下方按钮扫描</div>
+        </div>
+    </div>
+
+    <!-- Checklist Tab -->
+    <div class="container tab-content" id="tabChecklist">
+        <div class="stats" style="margin-bottom:12px;">
+            <div class="stat"><div class="stat-val" id="ckPending">0</div><div class="stat-lbl">待执行</div></div>
+            <div class="stat"><div class="stat-val" id="ckDone">0</div><div class="stat-lbl">已完成</div></div>
+            <div class="stat"><div class="stat-val" id="ckBuyAmt">0</div><div class="stat-lbl">买入金额</div></div>
+            <div class="stat"><div class="stat-val" id="ckSellAmt">0</div><div class="stat-lbl">卖出金额</div></div>
+        </div>
+        <div id="checklistContainer"></div>
+    </div>
+
+    <!-- Bottom actions -->
+    <div style="position: sticky; bottom: 0; padding: 12px; background: var(--bg); border-top: 1px solid var(--border); display: flex; gap: 8px;">
+        <button class="btn" style="background:var(--blue);color:white;flex:2;" onclick="doScan()">
+            策略扫描
+        </button>
+        <button class="btn" style="background:transparent;color:var(--dim);border:1px solid var(--border);flex:1;" onclick="refreshAll()">
+            刷新
+        </button>
+    </div>
+
+    <div class="refresh-bar" id="refreshInfo">自动刷新：每30秒</div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const BASE = '/api/live';
+        let curTab = 'signals';
+
+        function showToast(msg, type) {
+            const t = document.getElementById('toast');
+            t.textContent = msg; t.className = `toast toast-${type||'ok'} show`;
+            setTimeout(() => t.classList.remove('show'), 2000);
+        }
+
+        async function apiGet(path) {
+            const r = await fetch(`${BASE}${path}`);
+            return r.ok ? r.json() : {status:'error'};
+        }
+        async function apiPost(path, body) {
+            const r = await fetch(`${BASE}${path}`, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify(body||{})
+            });
+            return r.json();
+        }
+
+        function switchTab(tab) {
+            curTab = tab;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(p => p.classList.remove('active'));
+            document.getElementById('tab'+tab.charAt(0).toUpperCase()+tab.slice(1)).classList.add('active');
+            document.querySelector(`[onclick="switchTab('${tab}')"]`).classList.add('active');
+            if (tab === 'checklist') refreshChecklist();
+        }
+
+        async function refreshAll() {
+            // Account
+            const s = await apiGet('/status');
+            if (s.status === 'success') {
+                const d = s.data, a = d.account||{};
+                document.getElementById('acctAssets').textContent = (a.total_assets/10000).toFixed(1)+'万';
+                document.getElementById('acctCash').textContent = (a.available_cash/10000).toFixed(1)+'万';
+                document.getElementById('acctPos').textContent = (a.position_count||0)+'只';
+                const dp = a.daily_profit||0;
+                const de = document.getElementById('acctDaily');
+                de.textContent = (dp>=0?'+':'') + (dp/100).toFixed(0)+'%';
+                de.style.color = dp>=0 ? 'var(--green)' : 'var(--red)';
+                document.getElementById('headerTime').textContent = d.last_scan_time || '待扫描';
+            }
+            // Signals
+            const sig = await apiGet('/signals');
+            renderSignals(sig.data||[]);
+        }
+
+        function renderSignals(data) {
+            const container = document.getElementById('signalsContainer');
+            const empty = document.getElementById('signalsEmpty');
+            document.getElementById('signalTabCount').textContent = data.length ? `(${data.length})` : '';
+
+            if (!data.length) {
+                container.innerHTML = '';
+                empty.style.display = 'block';
+                return;
+            }
+            empty.style.display = 'none';
+
+            container.innerHTML = data.map(s => {
+                const cls = s.signal === 'BUY' ? 'signal-buy' : 'signal-sell';
+                const actCls = s.signal === 'BUY' ? 'action-buy' : 'action-sell';
+                const actText = s.signal === 'BUY' ? '买入' : '卖出';
+
+                return `
+                <div class="signal-card ${cls}" id="sig-${s.ts_code}-${s.strategy}">
+                    <div class="signal-top">
+                        <div>
+                            <div class="signal-code">${s.ts_code}</div>
+                            <div class="signal-name">${s.name||''}</div>
+                        </div>
+                        <div class="signal-action ${actCls}">${actText}</div>
+                    </div>
+                    <div class="signal-body">
+                        <div class="signal-row">
+                            <span class="lbl">建议价格</span>
+                            <span class="val">${s.price?.toFixed(2)||'--'}</span>
+                        </div>
+                        <div class="signal-row">
+                            <span class="lbl">仓位权重</span>
+                            <span class="val">${((s.weight||0.20)*100).toFixed(0)}%</span>
+                        </div>
+                        <div class="signal-row">
+                            <span class="lbl">策略来源</span>
+                            <span class="val">${s.strategy||'--'}</span>
+                        </div>
+                    </div>
+                    <div class="signal-reason">${s.reason||''}</div>
+                    ${s.executed ? `
+                        <div style="margin-top:10px;"><span class="executed-badge badge-ok">已执行</span></div>
+                    ` : s.confirmed ? `
+                        <div style="margin-top:10px;"><span class="executed-badge badge-ok">已确认</span></div>
+                    ` : `
+                        <div class="btn-row">
+                            <button class="btn btn-exec" onclick="doExecute('${s.ts_code}','${s.strategy}','${s.signal}')">
+                                已执行
+                            </button>
+                            <button class="btn btn-skip" onclick="doReject('${s.ts_code}','${s.strategy}','${s.signal}')">
+                                跳过
+                            </button>
+                        </div>
+                    `}
+                </div>`;
+            }).join('');
+        }
+
+        async function doExecute(code, strategy, signal) {
+            const r = await apiPost('/signal/confirm', {
+                ts_code: code, strategy, signal, confirmed: true
+            });
+            if (r.status === 'success') {
+                showToast('已标记执行 ✓', 'ok');
+            } else {
+                showToast(r.data?.error || '操作失败', 'err');
+            }
+            refreshAll();
+        }
+
+        async function doReject(code, strategy, signal) {
+            const r = await apiPost('/signal/confirm', {
+                ts_code: code, strategy, signal, confirmed: false
+            });
+            if (r.status === 'success') {
+                showToast('已跳过', 'ok');
+            } else {
+                showToast(r.data?.error || '操作失败', 'err');
+            }
+            refreshAll();
+        }
+
+        async function doScan() {
+            showToast('扫描中...', 'ok');
+            const r = await apiPost('/scan');
+            if (r.status === 'success') {
+                const d = r.data;
+                showToast(`扫描完成，${d.signals?.length||0} 条信号`, 'ok');
+            } else {
+                showToast('扫描失败', 'err');
+            }
+            refreshAll();
+        }
+
+        // Checklist
+        async function refreshChecklist() {
+            const r = await apiGet('/trade/checklist');
+            const data = r.data||{};
+            const summary = data.summary||{};
+            document.getElementById('ckPending').textContent = summary.pending||0;
+            document.getElementById('ckDone').textContent = summary.executed||0;
+            document.getElementById('ckBuyAmt').textContent = ((summary.total_buy_amount||0)/10000).toFixed(1)+'万';
+            document.getElementById('ckSellAmt').textContent = ((summary.total_sell_amount||0)/10000).toFixed(1)+'万';
+            document.getElementById('ckTabCount').textContent = summary.pending ? `(${summary.pending})` : '';
+
+            const items = data.items||[];
+            const container = document.getElementById('checklistContainer');
+
+            container.innerHTML = items.map(it => {
+                let statusIcon = '';
+                if (it.status === 'executed') statusIcon = '<div class="ck-status ck-done">✓</div>';
+                else if (it.status === 'skipped') statusIcon = '<div class="ck-status ck-skip">−</div>';
+                else statusIcon = '<div class="ck-status ck-pending">○</div>';
+
+                return `
+                <div class="checklist-item">
+                    ${statusIcon}
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-weight:600;font-size:14px;">${it.action} ${it.ts_code} ${it.name||''}</div>
+                        <div style="font-size:11px;color:var(--dim);margin-top:2px;">
+                            ${it.suggested_quantity}股 @ ${it.suggested_price} | ${it.strategy||''}
+                        </div>
+                        <div style="font-size:11px;color:var(--yellow);margin-top:2px;">${it.reason||''}</div>
+                        ${it.executed_at ? `<div style="font-size:10px;color:var(--dim);">${it.executed_at}</div>` : ''}
+                    </div>
+                </div>`;
+            }).join('') || '<div class="empty"><div class="empty-text">暂无执行记录</div></div>';
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshAll();
+            setInterval(refreshAll, 30000);
+        });
+    </script>
+</body>
+</html>

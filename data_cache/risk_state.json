@@ -1,0 +1,11 @@
+{
+  "date": "20260608",
+  "starting_equity": 0,
+  "current_equity": 0,
+  "daily_loss": 0,
+  "daily_loss_rate": 0,
+  "daily_trade_count": 4,
+  "daily_buy_amount": 364283.744,
+  "max_daily_loss_triggered": false,
+  "trading_halted": false
+}

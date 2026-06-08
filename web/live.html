@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实盘交易 - A股量化交易系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0d1117;
+            --card-bg: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --text-dim: #8b949e;
+            --green: #3fb950;
+            --red: #f85149;
+            --blue: #58a6ff;
+            --yellow: #d2991d;
+            --purple: #a371f7;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            min-height: 100vh;
+        }
+
+        .navbar {
+            background: var(--card-bg);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .navbar-brand { font-size: 18px; font-weight: 600; color: var(--blue); text-decoration: none; }
+        .navbar-nav { display: flex; gap: 4px; list-style: none; }
+        .navbar-nav a {
+            color: var(--text-dim); text-decoration: none; padding: 8px 16px;
+            border-radius: 6px; font-size: 14px; transition: all 0.2s;
+        }
+        .navbar-nav a:hover, .navbar-nav a.active { color: var(--text); background: rgba(255,255,255,0.05); }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
+        .grid { display: grid; gap: 16px; }
+        .grid-4 { grid-template-columns: repeat(4, 1fr); }
+        .grid-3 { grid-template-columns: 2fr 1fr; }
+        .grid-2 { grid-template-columns: 1fr 1fr; }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .card-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 16px; padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .card-title { font-size: 15px; font-weight: 600; }
+        .card-badge {
+            font-size: 11px; padding: 3px 10px; border-radius: 12px;
+            font-weight: 500;
+        }
+        .badge-live { background: rgba(63,185,80,0.15); color: var(--green); }
+        .badge-sim { background: rgba(88,166,255,0.15); color: var(--blue); }
+        .badge-warn { background: rgba(210,153,29,0.15); color: var(--yellow); }
+        .badge-danger { background: rgba(248,81,73,0.15); color: var(--red); }
+
+        .metric {
+            text-align: center; padding: 12px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 6px;
+        }
+        .metric-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+        .metric-value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+        .metric-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+        .profit-pos { color: var(--green); }
+        .profit-neg { color: var(--red); }
+
+        table { width: 100%; border-collapse: collapse; }
+        th, td {
+            padding: 10px 12px; text-align: left; font-size: 13px;
+            border-bottom: 1px solid var(--border);
+        }
+        th { color: var(--text-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+        tr:hover td { background: rgba(255,255,255,0.02); }
+
+        .btn {
+            padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border);
+            background: var(--card-bg); color: var(--text); font-size: 13px;
+            cursor: pointer; transition: all 0.15s; font-weight: 500;
+        }
+        .btn:hover { background: rgba(255,255,255,0.08); }
+        .btn-primary { background: #238636; border-color: #238636; color: white; }
+        .btn-primary:hover { background: #2ea043; }
+        .btn-danger { background: #da3633; border-color: #da3633; color: white; }
+        .btn-danger:hover { background: #f85149; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+        .btn-xs { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
+        .btn-group { display: flex; gap: 6px; }
+
+        input, select, textarea {
+            background: var(--bg); color: var(--text);
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 8px 12px; font-size: 13px; width: 100%;
+        }
+        input:focus, select:focus { outline: none; border-color: var(--blue); }
+        .form-group { margin-bottom: 12px; }
+        .form-label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+        .signal-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px; border-radius: 6px; margin-bottom: 8px;
+            background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+        }
+        .signal-buy { border-left: 3px solid var(--green); }
+        .signal-sell { border-left: 3px solid var(--red); }
+        .signal-hold { border-left: 3px solid var(--text-dim); }
+        .signal-info { flex: 1; }
+        .signal-code { font-weight: 600; font-size: 14px; }
+        .signal-name { font-size: 12px; color: var(--text-dim); }
+        .signal-reason { font-size: 12px; color: var(--yellow); margin-top: 2px; }
+        .signal-meta { font-size: 11px; color: var(--text-dim); }
+
+        .toast {
+            position: fixed; top: 20px; right: 20px; z-index: 9999;
+            padding: 12px 20px; border-radius: 8px; color: white; font-size: 14px;
+            animation: slideIn 0.3s ease; box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        .toast-success { background: #238636; }
+        .toast-error { background: #da3633; }
+        .toast-info { background: #1f6feb; }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .tabs { display: flex; gap: 2px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+        .tab { padding: 8px 16px; cursor: pointer; font-size: 13px; color: var(--text-dim); border-bottom: 2px solid transparent; }
+        .tab:hover { color: var(--text); }
+        .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+        .status-bar {
+            display: flex; align-items: center; gap: 20px; padding: 10px 20px;
+            background: var(--card-bg); border-bottom: 1px solid var(--border);
+            font-size: 12px; color: var(--text-dim);
+        }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .dot-running { background: var(--green); animation: pulse 2s infinite; }
+        .dot-stopped { background: var(--text-dim); }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        .text-green { color: var(--green); }
+        .text-red { color: var(--red); }
+        .text-blue { color: var(--blue); }
+        .text-dim { color: var(--text-dim); }
+    </style>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar">
+        <a href="/" class="navbar-brand">📈 量化交易系统</a>
+        <ul class="navbar-nav">
+            <li><a href="/">回测</a></li>
+            <li><a href="/live.html" class="active">实盘交易</a></li>
+            <li><a href="/docs" target="_blank">API文档</a></li>
+        </ul>
+    </nav>
+
+    <!-- Status Bar -->
+    <div class="status-bar" id="statusBar">
+        <span><span class="status-dot dot-stopped" id="statusDot"></span> <span id="statusText">未启动</span></span>
+        <span>券商: <strong id="statusBroker">--</strong></span>
+        <span>模式: <strong id="statusMode">--</strong></span>
+        <span>最后扫描: <strong id="statusScan">--</strong></span>
+        <span>风控: <strong id="statusRisk">--</strong></span>
+    </div>
+
+    <div class="container">
+        <!-- Controls -->
+        <div class="card" style="margin-bottom: 16px; padding: 12px 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="btnStart" onclick="startLive()">
+                        <i class="bi bi-play-fill"></i> 启动实盘
+                    </button>
+                    <button class="btn btn-danger" id="btnStop" onclick="stopLive()" style="display:none;">
+                        <i class="bi bi-stop-fill"></i> 停止
+                    </button>
+                    <button class="btn" onclick="manualScan()">
+                        <i class="bi bi-arrow-repeat"></i> 手动扫描
+                    </button>
+                    <button class="btn" onclick="resetAccount()" id="btnReset">
+                        <i class="bi bi-arrow-counterclockwise"></i> 重置账户
+                    </button>
+                </div>
+                <div class="btn-group" style="align-items: center; gap: 10px;">
+                    <span class="text-dim" style="font-size: 12px;">策略:</span>
+                    <select id="scanStrategy" onchange="updateConfig()" style="width: auto;">
+                        <option value="all" selected>全部策略</option>
+                        <option value="eight_factor">8因子选股</option>
+                        <option value="position">位置判断</option>
+                        <option value="momentum">动量策略</option>
+                        <option value="mean_reversion">均值回归</option>
+                        <option value="value">价值策略</option>
+                        <option value="quality">质量策略</option>
+                        <option value="low_volatility">低波动</option>
+                        <option value="trend_following">趋势跟随</option>
+                    </select>
+                    <span class="text-dim" style="font-size: 12px;">刷新:</span>
+                    <select id="scanInterval" onchange="updateInterval()" style="width: auto;">
+                        <option value="30">30秒</option>
+                        <option value="60" selected>1分钟</option>
+                        <option value="120">2分钟</option>
+                        <option value="300">5分钟</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- Account Overview -->
+        <div class="grid grid-4" style="margin-bottom: 16px;">
+            <div class="card">
+                <div class="metric">
+                    <div class="metric-label">总资产</div>
+                    <div class="metric-value text-blue" id="acctAssets">--</div>
+                    <div class="metric-sub" id="acctProfit"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="metric">
+                    <div class="metric-label">可用资金</div>
+                    <div class="metric-value" id="acctCash">--</div>
+                    <div class="metric-sub">元</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="metric">
+                    <div class="metric-label">持仓市值</div>
+                    <div class="metric-value" id="acctMv">--</div>
+                    <div class="metric-sub" id="acctCount"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="metric">
+                    <div class="metric-label">当日盈亏</div>
+                    <div class="metric-value" id="acctDaily">--</div>
+                    <div class="metric-sub">风险: <span id="acctRisk">--</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="grid grid-3" style="margin-bottom: 16px;">
+            <!-- Left: Positions -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📦 当前持仓</span>
+                    <span class="card-badge badge-sim" id="positionCount">0只</span>
+                </div>
+                <div style="max-height: 400px; overflow-y: auto;">
+                    <table>
+                        <thead><tr>
+                            <th>代码</th><th>名称</th><th>数量</th><th>成本</th><th>现价</th><th>市值</th><th>盈亏率</th>
+                        </tr></thead>
+                        <tbody id="positionsBody">
+                            <tr><td colspan="7" class="text-dim" style="text-align:center;">-- 暂无持仓 --</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Right: Signals -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📡 交易信号</span>
+                    <span class="card-badge badge-warn" id="signalCount">0条</span>
+                </div>
+                <div id="signalsContainer" style="max-height: 400px; overflow-y: auto;">
+                    <p class="text-dim" style="text-align:center; padding:40px;">-- 暂无信号，点击扫描 --</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom: Orders + Manual Order -->
+        <div class="grid grid-2" style="margin-bottom: 16px;">
+            <!-- Order History -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📋 订单记录</span>
+                    <span class="card-badge badge-live" id="orderCount">0笔</span>
+                </div>
+                <div style="max-height: 350px; overflow-y: auto;">
+                    <table>
+                        <thead><tr>
+                            <th>时间</th><th>代码</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th><th>状态</th>
+                        </tr></thead>
+                        <tbody id="ordersBody">
+                            <tr><td colspan="7" class="text-dim" style="text-align:center;">-- 暂无订单 --</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Manual Order + Stock Pool -->
+            <div class="card">
+                <div class="tabs">
+                    <div class="tab active" onclick="switchTab('order')" id="tabOrder">✏️ 手动下单</div>
+                    <div class="tab" onclick="switchTab('pool')" id="tabPool">📊 股票池 (<span id="poolCount">0</span>)</div>
+                </div>
+
+                <!-- Order Form -->
+                <div id="panelOrder" class="tab-content active" style="padding-top: 12px;">
+                    <div class="form-group">
+                        <label class="form-label">股票代码</label>
+                        <input type="text" id="orderCode" placeholder="如: 600519">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">方向</label>
+                            <select id="orderSide"><option value="BUY">买入</option><option value="SELL">卖出</option></select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">数量（股）</label>
+                            <input type="number" id="orderQty" value="100" min="100" step="100">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">价格（0=市价）</label>
+                        <input type="number" id="orderPrice" value="0" min="0" step="0.01">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">原因</label>
+                        <input type="text" id="orderReason" placeholder="手动下单">
+                    </div>
+                    <button class="btn btn-primary" onclick="submitOrder()" style="width:100%;">
+                        <i class="bi bi-send"></i> 提交订单
+                    </button>
+                </div>
+
+                <!-- Stock Pool -->
+                <div id="panelPool" class="tab-content" style="padding-top: 12px;">
+                    <div class="form-group">
+                        <label class="form-label">快速添加</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="newStockCode" placeholder="输入6位代码，如: 600519" style="flex:1;">
+                            <button class="btn btn-primary btn-sm" onclick="addStock()">添加</button>
+                            <button class="btn btn-sm" onclick="refreshPool()" title="刷新股票名称">🔄</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">批量导入（每行一个代码，或 代码,名称）</label>
+                        <textarea id="importText" rows="4" placeholder="600519,贵州茅台
+000858,五粮液
+002415,海康威视"></textarea>
+                        <div style="display: flex; gap: 8px; margin-top: 8px;">
+                            <button class="btn btn-sm" onclick="importPool()">导入替换</button>
+                            <button class="btn btn-sm" onclick="exportPool('text')">导出文本</button>
+                            <button class="btn btn-sm" onclick="exportPool('csv')">导出CSV</button>
+                            <button class="btn btn-sm" onclick="exportPool('json')">导出JSON</button>
+                        </div>
+                    </div>
+                    <div style="max-height: 250px; overflow-y: auto;">
+                        <table>
+                            <thead><tr>
+                                <th>代码</th><th>名称</th><th>行业</th><th>操作</th>
+                            </tr></thead>
+                            <tbody id="poolBody">
+                                <tr><td colspan="4" class="text-dim" style="text-align:center;">-- 加载中 --</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Risk Info -->
+        <div class="card" id="riskCard" style="margin-bottom: 16px;">
+            <div class="card-header">
+                <span class="card-title">🛡️ 风控状态</span>
+                <span class="card-badge badge-live" id="riskStatus">正常</span>
+            </div>
+            <div style="display: flex; gap: 40px; font-size: 13px;">
+                <div>
+                    <span class="text-dim">日初始权益: </span><strong id="riskStarting">--</strong>
+                </div>
+                <div>
+                    <span class="text-dim">当日亏损: </span><strong id="riskLoss">--</strong>
+                </div>
+                <div>
+                    <span class="text-dim">亏损率: </span><strong id="riskLossRate">--</strong>
+                </div>
+                <div>
+                    <span class="text-dim">限制: </span><strong id="riskLimit">2%</strong>
+                </div>
+                <div>
+                    <span class="text-dim">今日交易: </span><strong id="riskTrades">0笔</strong>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast" style="display:none;"></div>
+
+    <script>
+        const BASE = '/api/live';
+        let refreshTimer = null;
+
+        // ========== Toast ==========
+        function showToast(msg, type) {
+            const t = document.getElementById('toast');
+            t.className = `toast toast-${type}`;
+            t.textContent = msg;
+            t.style.display = 'block';
+            setTimeout(() => t.style.display = 'none', 3000);
+        }
+
+        // ========== API Helpers ==========
+        async function apiGet(path) {
+            try {
+                const r = await fetch(`${BASE}${path}`);
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return await r.json();
+            } catch(e) { return {status:'error',data:null,error:e.message}; }
+        }
+
+        async function apiPost(path, body) {
+            try {
+                const r = await fetch(`${BASE}${path}`, {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify(body)
+                });
+                return await r.json();
+            } catch(e) { return {status:'error',data:null,error:e.message}; }
+        }
+
+        // ========== Status Refresh ==========
+        async function refreshAll() {
+            const s = await apiGet('/status');
+            if (s.status !== 'success') return;
+            const d = s.data;
+
+            // Status bar
+            const running = d.running;
+            document.getElementById('statusDot').className = `status-dot ${running ? 'dot-running' : 'dot-stopped'}`;
+            document.getElementById('statusText').textContent = running ? '运行中' : '已停止';
+            document.getElementById('statusBroker').textContent = d.broker_label || d.broker_name;
+            document.getElementById('statusMode').textContent = d.trade_mode_label;
+            document.getElementById('statusScan').textContent = d.last_scan_time || '--';
+            document.getElementById('statusRisk').textContent = d.risk?.trading_halted ? '⚠ 已暂停' : '正常';
+            if (d.risk?.trading_halted) document.getElementById('statusRisk').className = 'text-red';
+
+            // Buttons
+            document.getElementById('btnStart').style.display = running ? 'none' : '';
+            document.getElementById('btnStop').style.display = running ? '' : 'none';
+
+            // Account
+            const a = d.account || {};
+            document.getElementById('acctAssets').textContent = a.total_assets ? `${(a.total_assets/10000).toFixed(2)}万` : '--';
+            const profitEl = document.getElementById('acctProfit');
+            if (a.total_profit_rate !== undefined) {
+                profitEl.textContent = `${(a.total_profit_rate*100).toFixed(2)}% 累计`;
+                profitEl.className = `metric-sub ${a.total_profit_rate >= 0 ? 'profit-pos' : 'profit-neg'}`;
+            }
+            document.getElementById('acctCash').textContent = a.available_cash ? `${(a.available_cash/10000).toFixed(2)}万` : '--';
+            document.getElementById('acctMv').textContent = a.market_value ? `${(a.market_value/10000).toFixed(2)}万` : '--';
+            document.getElementById('acctCount').textContent = `持仓 ${a.position_count || 0} 只`;
+            const dailyEl = document.getElementById('acctDaily');
+            if (a.daily_profit !== undefined) {
+                dailyEl.textContent = `${a.daily_profit >= 0 ? '+' : ''}${(a.daily_profit).toFixed(0)}元`;
+                dailyEl.className = `metric-value ${a.daily_profit >= 0 ? 'profit-pos' : 'profit-neg'}`;
+            }
+
+            // Risk
+            const r = d.risk || {};
+            document.getElementById('riskStarting').textContent = r.starting_equity ? `${(r.starting_equity/10000).toFixed(2)}万` : '--';
+            document.getElementById('riskLoss').textContent = r.daily_loss ? `${r.daily_loss.toFixed(0)}元` : '0元';
+            document.getElementById('riskLossRate').textContent = r.daily_loss_rate ? `${(r.daily_loss_rate*100).toFixed(2)}%` : '0%';
+            document.getElementById('riskTrades').textContent = `${r.daily_trade_count || 0}笔`;
+            if (r.trading_halted) {
+                document.getElementById('riskStatus').textContent = '⚠ 已暂停';
+                document.getElementById('riskStatus').className = 'card-badge badge-danger';
+            }
+        }
+
+        async function refreshPositions() {
+            const r = await apiGet('/positions');
+            const tbody = document.getElementById('positionsBody');
+            const data = r.data || [];
+            document.getElementById('positionCount').textContent = `${data.length}只`;
+
+            if (!data.length) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-dim" style="text-align:center;">-- 暂无持仓 --</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.map(p => `
+                <tr>
+                    <td><strong>${p.ts_code}</strong></td>
+                    <td>${p.name || p.ts_code}</td>
+                    <td>${p.quantity}</td>
+                    <td>${p.cost_price?.toFixed(2)}</td>
+                    <td>${p.current_price?.toFixed(2)}</td>
+                    <td>${(p.market_value/10000).toFixed(2)}万</td>
+                    <td class="${(p.profit_rate||0) >= 0 ? 'text-green' : 'text-red'}">
+                        ${((p.profit_rate||0)*100).toFixed(2)}%
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function refreshSignals() {
+            const r = await apiGet('/signals');
+            const container = document.getElementById('signalsContainer');
+            const data = r.data || [];
+            document.getElementById('signalCount').textContent = `${data.length}条`;
+
+            if (!data.length) {
+                container.innerHTML = '<p class="text-dim" style="text-align:center; padding:40px;">-- 暂无信号，点击扫描 --</p>';
+                return;
+            }
+
+            container.innerHTML = data.map(s => `
+                <div class="signal-row ${s.signal === 'BUY' ? 'signal-buy' : s.signal === 'SELL' ? 'signal-sell' : 'signal-hold'}">
+                    <div class="signal-info">
+                        <div>
+                            <span class="signal-code">${s.ts_code}</span>
+                            <span class="signal-name">${s.name}</span>
+                            <span class="signal-meta"> | ${s.strategy}</span>
+                        </div>
+                        <div class="signal-reason">${s.reason}</div>
+                        <div class="signal-meta">
+                            ${s.signal === 'BUY' ? '🟢 买入' : s.signal === 'SELL' ? '🔴 卖出' : '⚪ 持有'}
+                            | 价格: ${s.price?.toFixed(2)} | 权重: ${((s.weight||0)*100).toFixed(1)}%
+                            | ${s.create_time}
+                        </div>
+                    </div>
+                    <div class="btn-group">
+                        ${!s.executed && !s.confirmed ? `
+                            <button class="btn btn-sm btn-primary" onclick="confirmSignal('${s.ts_code}','${s.strategy}','${s.signal}',true)">
+                                确认
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="confirmSignal('${s.ts_code}','${s.strategy}','${s.signal}',false)">
+                                拒绝
+                            </button>
+                        ` : s.executed ? '<span class="text-green">✓ 已执行</span>' : '<span class="text-blue">○ 已确认</span>'}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function refreshOrders() {
+            const r = await apiGet('/orders?limit=30');
+            const tbody = document.getElementById('ordersBody');
+            const data = r.data || [];
+            document.getElementById('orderCount').textContent = `${data.length}笔`;
+
+            if (!data.length) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-dim" style="text-align:center;">-- 暂无订单 --</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.map(o => {
+                const statusClass = o.status === 'FILLED' ? 'text-green' :
+                                   o.status === 'REJECTED' ? 'text-red' :
+                                   o.status === 'CANCELLED' ? 'text-dim' : 'text-blue';
+                return `
+                <tr>
+                    <td class="text-dim">${(o.create_time||'').substring(11)}</td>
+                    <td><strong>${o.ts_code}</strong></td>
+                    <td class="${o.side === 'BUY' ? 'text-green' : 'text-red'}">${o.side === 'BUY' ? '买入' : '卖出'}</td>
+                    <td>${o.filled_price?.toFixed(2) || o.price?.toFixed(2) || '--'}</td>
+                    <td>${o.filled_quantity || o.quantity}</td>
+                    <td>${o.amount ? `${(o.amount/10000).toFixed(2)}万` : '--'}</td>
+                    <td class="${statusClass}">${o.status}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        // ========== Actions ==========
+        async function startLive() {
+            const r = await apiPost('/start', {});
+            if (r.status === 'success') {
+                showToast('实盘服务已启动', 'success');
+            } else {
+                showToast('启动失败: ' + (r.data?.message || '未知错误'), 'error');
+            }
+            refreshAll();
+        }
+
+        async function stopLive() {
+            const r = await apiPost('/stop', {});
+            if (r.status === 'success') {
+                showToast('实盘服务已停止', 'info');
+            }
+            refreshAll();
+        }
+
+        async function manualScan() {
+            showToast('正在扫描...', 'info');
+            const r = await apiPost('/scan', {});
+            if (r.status === 'success') {
+                const d = r.data;
+                const sigs = d.signals || [];
+                showToast(`扫描完成: ${d.status} | ${sigs.length} 条信号`, 'success');
+            } else {
+                showToast('扫描失败', 'error');
+            }
+            refreshAll();
+            refreshSignals();
+        }
+
+        async function confirmSignal(code, strategy, signal, confirmed) {
+            const r = await apiPost('/signal/confirm', {
+                ts_code: code, strategy, signal, confirmed
+            });
+            if (r.status === 'success') {
+                showToast(confirmed ? '信号已确认，正在执行...' : '信号已拒绝', confirmed ? 'success' : 'info');
+            } else {
+                showToast('操作失败: ' + (r.data?.error || ''), 'error');
+            }
+            refreshSignals();
+            refreshOrders();
+            refreshPositions();
+            refreshAll();
+        }
+
+        async function submitOrder() {
+            const code = document.getElementById('orderCode').value.trim();
+            const side = document.getElementById('orderSide').value;
+            const qty = parseInt(document.getElementById('orderQty').value);
+            const price = parseFloat(document.getElementById('orderPrice').value);
+            const reason = document.getElementById('orderReason').value;
+
+            if (!code || qty < 100) {
+                showToast('请输入有效股票代码和数量（≥100股）', 'error');
+                return;
+            }
+
+            showToast('提交订单中...', 'info');
+            const r = await apiPost('/order', {
+                ts_code: code, side, quantity: qty, price: price || 0, reason
+            });
+
+            if (r.data?.success) {
+                showToast(`订单成功: ${r.data.order?.order_id || ''}`, 'success');
+            } else {
+                showToast(`订单失败: ${r.data?.error || '未知错误'}`, 'error');
+            }
+
+            refreshOrders();
+            refreshPositions();
+            refreshAll();
+        }
+
+        async function resetAccount() {
+            if (!confirm('确定要重置模拟账户吗？所有持仓将被清空。')) return;
+            const r = await apiPost('/reset', {});
+            if (r.status === 'success') {
+                showToast('账户已重置', 'success');
+            }
+            refreshAll();
+            refreshPositions();
+            refreshOrders();
+        }
+
+        function updateInterval() {
+            const v = document.getElementById('scanInterval').value;
+            if (refreshTimer) clearInterval(refreshTimer);
+            refreshTimer = setInterval(refreshAll, parseInt(v) * 1000);
+            refreshTimer = setInterval(refreshSignals, parseInt(v) * 1000);
+            showToast(`刷新间隔已设为 ${v} 秒`, 'info');
+        }
+
+        // ========== Tab Switch ==========
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(p => p.classList.remove('active'));
+            document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+            document.getElementById('panel' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+            if (tab === 'pool') refreshPool();
+        }
+
+        // ========== Stock Pool ==========
+        async function refreshPool() {
+            const r = await apiGet('/pool?refresh=false');
+            const tbody = document.getElementById('poolBody');
+            const data = r.data?.stocks || [];
+            document.getElementById('poolCount').textContent = data.length;
+
+            if (!data.length) {
+                tbody.innerHTML = '<tr><td colspan="4" class="text-dim" style="text-align:center;">-- 股票池为空 --</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.map(s => `
+                <tr>
+                    <td><strong>${s.code}</strong></td>
+                    <td>${s.name || '--'}</td>
+                    <td>${s.industry || '--'}</td>
+                    <td>
+                        <button class="btn btn-xs btn-danger" onclick="removeStock('${s.code}')">删除</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function addStock() {
+            const code = document.getElementById('newStockCode').value.trim();
+            if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) {
+                showToast('请输入6位数字股票代码', 'error');
+                return;
+            }
+
+            const r = await apiPost('/pool/add', { code, name: '', industry: '' });
+            if (r.status === 'success') {
+                showToast(r.message, 'success');
+                document.getElementById('newStockCode').value = '';
+                refreshPool();
+            } else {
+                showToast(r.message || '添加失败', 'error');
+            }
+        }
+
+        async function removeStock(code) {
+            if (!confirm(`确定从股票池中移除 ${code}？`)) return;
+            try {
+                const r = await fetch(`${BASE}/pool/${code}`, { method: 'DELETE' });
+                const d = await r.json();
+                if (d.status === 'success') {
+                    showToast(d.message, 'success');
+                    refreshPool();
+                } else {
+                    showToast(d.message || '删除失败', 'error');
+                }
+            } catch(e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+
+        async function importPool() {
+            const text = document.getElementById('importText').value.trim();
+            if (!text) {
+                showToast('请粘贴股票代码', 'error');
+                return;
+            }
+
+            const r = await apiPost('/pool/import-text', { content: text });
+            if (r.status === 'success') {
+                showToast(r.message, 'success');
+                document.getElementById('importText').value = '';
+                refreshPool();
+                // Sync to scan config
+                await apiPost('/scan', {}); // trigger a sync
+            } else {
+                showToast(r.message || '导入失败', 'error');
+            }
+        }
+
+        async function exportPool(format) {
+            const r = await apiGet(`/pool/export?format=${format}`);
+            if (r.status !== 'success') {
+                showToast('导出失败', 'error');
+                return;
+            }
+
+            const content = r.data.content;
+            if (!content) {
+                // JSON format
+                const codes = (r.data.stocks || []).map(s => s.code).join('\n');
+                navigator.clipboard.writeText(codes).then(() => {
+                    showToast(`已复制 ${r.data.stocks?.length || 0} 个代码到剪贴板`, 'success');
+                }).catch(() => {
+                    showToast('复制失败，请手动复制', 'error');
+                });
+                return;
+            }
+
+            // Download as file
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `stock_pool.${format === 'csv' ? 'csv' : 'txt'}`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast(`已导出 ${format.toUpperCase()} 文件`, 'success');
+        }
+
+        // ========== Init ==========
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshAll();
+            refreshPositions();
+            refreshSignals();
+            refreshOrders();
+            refreshPool();
+
+            // Auto refresh: 10s for status
+            refreshTimer = setInterval(() => {
+                refreshAll();
+                refreshSignals();
+            }, 10000);
+
+            // Positions and orders: 30s
+            setInterval(refreshPositions, 30000);
+            setInterval(refreshOrders, 30000);
+
+            // Enter key to add stock
+            document.getElementById('newStockCode').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') addStock();
+            });
+        });
+    </script>
+</body>
+</html>

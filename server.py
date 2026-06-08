@@ -16,6 +16,7 @@ from typing import List, Optional, Dict
 import uvicorn
 import json
 import uuid
+import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from strategy import get_strategy, get_all_strategies, STRATEGY_REGISTRY
 from analysis.market_regime import MarketRegimeDetector, StrategyRegimeAdapter, MarketRegime
 from analysis.ai_analyzer import analyze_fed_event, AIAnalyzer
 from data.fetcher import DataFetcher, DataCache
-from config.settings import BACKTEST_CONFIG
+from config.settings import BACKTEST_CONFIG, LIVE_TRADING_CONFIG
 
 # 获取当前目录
 BASE_DIR = Path(__file__).parent
@@ -93,6 +94,22 @@ async def root():
     if html_file.exists():
         return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
     return HTMLResponse(content="<h1>请先创建 web/app.html 文件</h1>")
+
+@app.get("/live.html", response_class=HTMLResponse)
+async def live_page():
+    """返回实盘交易页面"""
+    html_file = BASE_DIR / "web" / "live.html"
+    if html_file.exists():
+        return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
+    return HTMLResponse(content="<h1>请先创建 web/live.html 文件</h1>")
+
+@app.get("/mobile.html", response_class=HTMLResponse)
+async def mobile_page():
+    """返回移动端信号页面"""
+    html_file = BASE_DIR / "web" / "mobile.html"
+    if html_file.exists():
+        return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
+    return HTMLResponse(content="<h1>请先创建 web/mobile.html 文件</h1>")
 
 @app.get("/api")
 async def api_info():
@@ -714,17 +731,489 @@ def execute_backtest(task_id: str, request: BacktestRequest):
 
 
 # ============================================================
+# 实盘交易 API
+# ============================================================
+
+# 初始化实盘服务（懒加载）
+_live_server = None
+
+def get_live_server():
+    """获取实盘服务实例（懒加载单例）"""
+    global _live_server
+    if _live_server is None:
+        from live_server import LiveTradingServer
+        from config.settings import LIVE_TRADING_CONFIG
+        _live_server = LiveTradingServer(LIVE_TRADING_CONFIG)
+    return _live_server
+
+
+class LiveOrderRequest(BaseModel):
+    """手动下单请求"""
+    ts_code: str
+    side: str  # BUY or SELL
+    quantity: int
+    price: float = 0
+    reason: str = ''
+
+
+class SignalConfirmRequest(BaseModel):
+    """信号确认请求"""
+    ts_code: str
+    strategy: str
+    signal: str  # BUY or SELL
+    confirmed: bool = True
+
+
+class LiveConfigUpdate(BaseModel):
+    """实盘配置更新"""
+    broker: Optional[str] = None
+    mode: Optional[str] = None
+    stock_pool: Optional[List[str]] = None
+    strategy: Optional[str] = None
+    interval_seconds: Optional[int] = None
+
+
+@app.get("/api/live/status")
+async def live_status():
+    """获取实盘服务状态"""
+    server = get_live_server()
+    return {"status": "success", "data": server.get_status()}
+
+
+@app.get("/api/live/account")
+async def live_account():
+    """获取实盘账户信息"""
+    server = get_live_server()
+    return {"status": "success", "data": server.get_account()}
+
+
+@app.get("/api/live/positions")
+async def live_positions():
+    """获取当前持仓"""
+    server = get_live_server()
+    return {"status": "success", "data": server.get_positions()}
+
+
+@app.get("/api/live/orders")
+async def live_orders(status: Optional[str] = None, limit: int = 50):
+    """获取订单列表"""
+    server = get_live_server()
+    return {"status": "success", "data": server.get_orders(status, limit)}
+
+
+@app.post("/api/live/order")
+async def live_submit_order(request: LiveOrderRequest):
+    """提交订单（手动下单）"""
+    server = get_live_server()
+    result = server.submit_order(
+        ts_code=request.ts_code,
+        side=request.side,
+        quantity=request.quantity,
+        price=request.price,
+        reason=request.reason or '手动下单'
+    )
+    return {"status": "success" if result.get('success') else "error", "data": result}
+
+
+@app.post("/api/live/order/{order_id}/cancel")
+async def live_cancel_order(order_id: str):
+    """撤销订单"""
+    server = get_live_server()
+    result = server.cancel_order(order_id)
+    return {"status": "success" if result.get('success') else "error", "data": result}
+
+
+@app.get("/api/live/signals")
+async def live_signals():
+    """获取当前信号"""
+    server = get_live_server()
+    return {"status": "success", "data": server.get_signals()}
+
+
+@app.get("/api/live/signals/history")
+async def live_signal_history(limit: int = 100):
+    """获取信号历史"""
+    server = get_live_server()
+    history = server.get_signal_history()
+    return {"status": "success", "data": history[:limit]}
+
+
+@app.post("/api/live/signal/confirm")
+async def live_confirm_signal(request: SignalConfirmRequest):
+    """确认/拒绝信号"""
+    server = get_live_server()
+    result = server.confirm_signal(
+        ts_code=request.ts_code,
+        strategy=request.strategy,
+        signal_type=request.signal,
+        confirmed=request.confirmed
+    )
+    return {"status": "success" if result.get('success') else "error", "data": result}
+
+
+@app.post("/api/live/scan")
+async def live_scan():
+    """手动触发一次策略扫描"""
+    server = get_live_server()
+    result = server.scan_and_trade()
+    return {"status": "success", "data": result}
+
+
+@app.post("/api/live/start")
+async def live_start(background_tasks: BackgroundTasks):
+    """启动实盘交易服务"""
+    server = get_live_server()
+    result = server.start(background=True)
+
+    # 同步更新实时行情
+    async def update_prices_periodically():
+        while server.running:
+            await asyncio.sleep(30)
+            server.update_market_prices()
+
+    if result.get('status') == 'started':
+        background_tasks.add_task(update_prices_periodically)
+
+    return {"status": "success", "data": result}
+
+
+@app.post("/api/live/stop")
+async def live_stop():
+    """停止实盘交易服务"""
+    server = get_live_server()
+    result = server.stop()
+    return {"status": "success", "data": result}
+
+
+@app.post("/api/live/reset")
+async def live_reset():
+    """重置模拟账户"""
+    server = get_live_server()
+    if hasattr(server.broker, 'reset_account'):
+        server.broker.reset_account()
+        server.risk_manager.reset_daily_state()
+        return {"status": "success", "data": {"message": "账户已重置"}}
+    return {"status": "error", "data": {"message": "当前券商不支持重置"}}
+
+
+# ============================================================
+# 股票池管理 API
+# ============================================================
+
+# 股票池持久化文件
+STOCK_POOL_FILE = BASE_DIR / "data_cache" / "live_stock_pool.json"
+
+def _load_stock_pool() -> List[dict]:
+    """从文件加载股票池"""
+    if STOCK_POOL_FILE.exists():
+        try:
+            with open(STOCK_POOL_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # 从配置读取默认值
+    default_codes = LIVE_TRADING_CONFIG.get('scan', {}).get('stock_pool', [])
+    return [{'code': c, 'name': '', 'industry': ''} for c in default_codes]
+
+def _save_stock_pool(pool: List[dict]):
+    """保存股票池到文件"""
+    STOCK_POOL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(STOCK_POOL_FILE, 'w', encoding='utf-8') as f:
+        json.dump(pool, f, indent=2, ensure_ascii=False)
+
+def _sync_stock_pool_to_config():
+    """同步股票池代码到 live_server 配置"""
+    pool = _load_stock_pool()
+    codes = [s['code'] for s in pool]
+    server = get_live_server()
+    if 'scan' in server.config:
+        server.config['scan']['stock_pool'] = codes
+
+
+class StockPoolItem(BaseModel):
+    """股票池条目"""
+    code: str
+    name: str = ''
+    industry: str = ''
+
+
+@app.get("/api/live/pool")
+async def get_stock_pool(refresh: bool = False):
+    """获取实盘股票池"""
+    pool = _load_stock_pool()
+
+    # 刷新股票名称和行业
+    if refresh:
+        for item in pool:
+            if not item.get('name') or not item.get('industry'):
+                try:
+                    info = data_fetcher.get_stock_info(item['code'])
+                    item['name'] = info.get('name', item['code'])
+                    item['industry'] = info.get('industry', '未知')
+                except Exception:
+                    if not item.get('name'):
+                        item['name'] = item['code']
+                    if not item.get('industry'):
+                        item['industry'] = '未知'
+        _save_stock_pool(pool)
+
+    return {
+        "status": "success",
+        "data": {
+            "stocks": pool,
+            "count": len(pool),
+            "codes": [s['code'] for s in pool],
+        }
+    }
+
+
+@app.post("/api/live/pool/add")
+async def add_stock_to_pool(item: StockPoolItem):
+    """添加股票到池"""
+    code = item.code.strip()
+    if not code.isdigit() or len(code) != 6:
+        return {"status": "error", "message": f"无效的股票代码: {code}"}
+
+    pool = _load_stock_pool()
+    existing_codes = [s['code'] for s in pool]
+    if code in existing_codes:
+        return {"status": "error", "message": f"股票 {code} 已在池中"}
+
+    # 获取名称
+    name = item.name
+    industry = item.industry
+    if not name:
+        try:
+            info = data_fetcher.get_stock_info(code)
+            name = info.get('name', code)
+            industry = info.get('industry', '未知')
+        except Exception:
+            name = code
+            industry = '未知'
+
+    pool.append({'code': code, 'name': name, 'industry': industry})
+    _save_stock_pool(pool)
+    _sync_stock_pool_to_config()
+
+    return {
+        "status": "success",
+        "data": {"code": code, "name": name, "industry": industry},
+        "message": f"已添加 {code} {name}"
+    }
+
+
+@app.delete("/api/live/pool/{code}")
+async def remove_stock_from_pool(code: str):
+    """从池中移除股票"""
+    pool = _load_stock_pool()
+    before = len(pool)
+    pool = [s for s in pool if s['code'] != code]
+    after = len(pool)
+
+    if before == after:
+        return {"status": "error", "message": f"股票 {code} 不在池中"}
+
+    _save_stock_pool(pool)
+    _sync_stock_pool_to_config()
+
+    return {"status": "success", "message": f"已移除 {code}"}
+
+
+@app.post("/api/live/pool/import")
+async def import_stock_pool(pool: List[StockPoolItem]):
+    """批量导入股票池（替换现有池）"""
+    result = []
+    skipped = []
+    for item in pool:
+        code = item.code.strip()
+        if not code.isdigit() or len(code) != 6:
+            skipped.append(code)
+            continue
+        name = item.name
+        industry = item.industry
+        if not name:
+            try:
+                info = data_fetcher.get_stock_info(code)
+                name = info.get('name', code)
+                industry = info.get('industry', '未知')
+            except Exception:
+                name = code
+                industry = '未知'
+        result.append({'code': code, 'name': name, 'industry': industry})
+
+    if not result:
+        return {"status": "error", "message": "没有有效的股票代码"}
+
+    _save_stock_pool(result)
+    _sync_stock_pool_to_config()
+
+    return {
+        "status": "success",
+        "data": {"stocks": result, "count": len(result)},
+        "message": f"已导入 {len(result)} 只股票" + (f"，跳过 {len(skipped)} 个无效代码" if skipped else "")
+    }
+
+
+class StockPoolTextImport(BaseModel):
+    """文本导入"""
+    content: str = ''  # 每行一个代码，或 代码,名称,行业
+
+
+@app.post("/api/live/pool/import-text")
+async def import_stock_pool_text(req: StockPoolTextImport):
+    """从文本导入股票池（每行一个代码或 代码,名称）"""
+    lines = req.content.strip().split('\n')
+    result = []
+    skipped = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(',')]
+        code = parts[0]
+        if not code.isdigit() or len(code) != 6:
+            skipped.append(code)
+            continue
+        name = parts[1] if len(parts) > 1 else ''
+        industry = parts[2] if len(parts) > 2 else ''
+        if not name:
+            try:
+                info = data_fetcher.get_stock_info(code)
+                name = info.get('name', code)
+                industry = info.get('industry', '未知')
+            except Exception:
+                name = code
+                industry = '未知'
+        result.append({'code': code, 'name': name, 'industry': industry})
+
+    if not result:
+        return {"status": "error", "message": "没有有效的股票代码"}
+
+    _save_stock_pool(result)
+    _sync_stock_pool_to_config()
+
+    return {
+        "status": "success",
+        "data": {"stocks": result, "count": len(result)},
+        "message": f"已导入 {len(result)} 只股票"
+    }
+
+
+@app.get("/api/live/pool/export")
+async def export_stock_pool(format: str = "json"):
+    """导出股票池"""
+    pool = _load_stock_pool()
+    if format == "csv":
+        csv_lines = ["代码,名称,行业"]
+        for s in pool:
+            csv_lines.append(f"{s['code']},{s['name']},{s.get('industry', '')}")
+        return {"status": "success", "data": {"format": "csv", "content": "\n".join(csv_lines)}}
+    elif format == "text":
+        text_lines = [f"{s['code']},{s['name']},{s.get('industry', '')}" for s in pool]
+        return {"status": "success", "data": {"format": "text", "content": "\n".join(text_lines)}}
+    else:
+        return {"status": "success", "data": {"format": "json", "stocks": pool, "codes": [s['code'] for s in pool]}}
+
+# ============================================================
+# 交易执行记录 API（手动执行后记录）
+# ============================================================
+
+class TradeRecordRequest(BaseModel):
+    """手动执行记录"""
+    ts_code: str
+    side: str = 'BUY'           # BUY / SELL
+    price: float = 0            # 实际成交价
+    quantity: int = 0           # 实际成交数量
+    reason: str = ''            # 备注
+
+
+@app.post("/api/live/trade/record")
+async def record_manual_trade(req: TradeRecordRequest):
+    """记录一笔手动执行的交易（用户在APP操作后回来记录）"""
+    server = get_live_server()
+    result = server.record_manual_trade(
+        ts_code=req.ts_code,
+        side=req.side,
+        price=req.price,
+        quantity=req.quantity,
+        reason=req.reason
+    )
+    return {"status": "success" if result.get('success') else "error", "data": result}
+
+
+@app.get("/api/live/trade/checklist")
+async def get_trade_checklist():
+    """获取交易执行清单"""
+    server = get_live_server()
+    if not hasattr(server, 'checklist') or server.checklist is None:
+        return {"status": "success", "data": {"items": [], "summary": {"total": 0, "pending": 0, "executed": 0, "skipped": 0}}}
+    return {
+        "status": "success",
+        "data": {
+            "items": server.checklist.get_all(),
+            "summary": server.checklist.get_summary(),
+            "history": server.checklist.get_history(20),
+        }
+    }
+
+
+@app.post("/api/live/trade/checklist/{item_id}/done")
+async def mark_checklist_done(item_id: str, price: float = 0, quantity: int = 0):
+    """标记清单项已执行"""
+    server = get_live_server()
+    if not hasattr(server, 'checklist') or server.checklist is None:
+        return {"status": "error", "message": "清单不存在"}
+    item = server.checklist.mark_executed(item_id, price, quantity)
+    if item:
+        return {"status": "success", "data": item}
+    return {"status": "error", "message": f"找不到 {item_id}"}
+
+
+@app.post("/api/live/trade/checklist/{item_id}/skip")
+async def mark_checklist_skipped(item_id: str):
+    """标记清单项跳过"""
+    server = get_live_server()
+    if not hasattr(server, 'checklist') or server.checklist is None:
+        return {"status": "error", "message": "清单不存在"}
+    item = server.checklist.mark_skipped(item_id)
+    if item:
+        return {"status": "success", "data": item}
+    return {"status": "error", "message": f"找不到 {item_id}"}
+
+# ============================================================
 # 启动服务
 # ============================================================
 
 if __name__ == "__main__":
+    import socket
+
+    # 获取局域网IP
+    lan_ip = ''
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        lan_ip = '127.0.0.1'
+
     print("=" * 60)
     print("A股量化交易系统 - 后端服务")
     print("=" * 60)
-    print("\n启动中...")
-    print("API文档: http://localhost:8000/docs")
-    print("接口地址: http://localhost:8000/api")
-    print("\n按 Ctrl+C 停止服务\n")
+    print()
+    print("  本地访问:")
+    print("    回测界面:   http://localhost:8000")
+    print("    实盘交易:   http://localhost:8000/live.html")
+    print("    手机看信号: http://localhost:8000/mobile.html")
+    print("    API文档:    http://localhost:8000/docs")
+    if lan_ip and lan_ip != '127.0.0.1':
+        print()
+        print("  手机扫码访问:")
+        print(f"    http://{lan_ip}:8000/mobile.html")
+        print(f"    (手机和电脑需在同一WiFi)")
+    print()
+    print("  按 Ctrl+C 停止服务")
+    print()
 
     uvicorn.run(
         "server:app",
