@@ -38,6 +38,7 @@ class OrderRequest:
     price: float = 0       # 价格（0=市价）
     order_type: OrderType = OrderType.MARKET
     reason: str = ''       # 下单原因
+    stock_name: str = ''   # 股票名称
 
 
 @dataclass

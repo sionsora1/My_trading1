@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -984,8 +984,8 @@ async def live_scan():
 
 @app.post("/api/live/start")
 async def live_start(background_tasks: BackgroundTasks,
-                     broker: Optional[str] = None,
-                     mode: Optional[str] = None):
+                     broker: Optional[str] = Body(None),
+                     mode: Optional[str] = Body(None)):
     """启动实盘交易服务（可指定券商和模式）"""
     global _live_server
 
@@ -1002,6 +1002,12 @@ async def live_start(background_tasks: BackgroundTasks,
             config['broker'] = broker
         if mode:
             config['mode'] = mode
+
+        # 修复：从已保存的股票池文件读取（而不是用配置默认值）
+        saved_pool = _load_stock_pool()
+        if saved_pool:
+            config['scan']['stock_pool'] = [s['code'] for s in saved_pool]
+
         _live_server = LiveTradingServer(config)
 
     server = get_live_server()
@@ -1017,6 +1023,49 @@ async def live_start(background_tasks: BackgroundTasks,
         background_tasks.add_task(update_prices_periodically)
 
     return {"status": "success", "data": result}
+
+
+class LiveConfigBody(BaseModel):
+    """实盘配置请求体"""
+    broker: Optional[str] = None
+    mode: Optional[str] = None
+    strategy: Optional[str] = None  # 策略选择
+
+
+@app.post("/api/live/config")
+async def live_update_config(req: LiveConfigBody):
+    """更新实盘配置（策略/模式/券商），无需重启"""
+    server = get_live_server()
+    if req.mode:
+        server.trade_mode = req.mode
+        server.config['mode'] = req.mode
+    if req.strategy:
+        server.config['scan']['strategy'] = req.strategy
+    if req.broker and req.broker != server.broker_name:
+        # 切换券商需要重建 broker
+        old_running = server.running
+        if old_running:
+            server.running = False  # 暂停扫描
+        server.broker.disconnect()
+        server.broker_name = req.broker
+        server._init_broker()
+        if old_running:
+            server.running = True
+
+    strategy_label = server.config.get('scan', {}).get('strategy', 'all')
+    if strategy_label in STRATEGY_REGISTRY:
+        strategy_label = STRATEGY_REGISTRY[strategy_label]['name']
+
+    return {
+        "status": "success",
+        "data": {
+            "broker": server.broker_name,
+            "mode": server.trade_mode,
+            "mode_label": "全自动" if server.trade_mode == 'auto' else "半自动",
+            "strategy": server.config.get('scan', {}).get('strategy', 'all'),
+            "strategy_label": strategy_label,
+        }
+    }
 
 
 @app.post("/api/live/stop")

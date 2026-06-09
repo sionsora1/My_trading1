@@ -139,7 +139,7 @@ class SimBroker(BaseBroker):
         # 执行成交
         try:
             if request.side == OrderSide.BUY:
-                self._execute_buy(result, price, request.quantity)
+                self._execute_buy(result, price, request.quantity, request.stock_name)
             else:
                 self._execute_sell(result, price, request.quantity)
 
@@ -153,7 +153,7 @@ class SimBroker(BaseBroker):
 
         return result
 
-    def _execute_buy(self, result: OrderResult, price: float, quantity: int):
+    def _execute_buy(self, result: OrderResult, price: float, quantity: int, name: str = ''):
         """执行买入"""
         # 计算滑点（买入时价格上浮）
         slippage = price * self.slippage_rate
@@ -186,6 +186,7 @@ class SimBroker(BaseBroker):
         else:
             self._positions[result.ts_code] = PositionInfo(
                 ts_code=result.ts_code,
+                name=name or result.ts_code,
                 quantity=quantity,
                 available_quantity=0,  # T+1，当天不可卖（简化：设0）
                 cost_price=fill_price,

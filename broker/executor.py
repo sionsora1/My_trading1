@@ -168,23 +168,23 @@ class TradeChecklist:
         pending = self.get_pending()
 
         print("\n" + "=" * 60)
-        print("📋 交易执行清单")
-        print(f"   待执行: {summary['pending']} | 买入: {summary['buy_items']} | 卖出: {summary['sell_items']}")
+        print("[Trade Checklist]")
+        print(f"   Pending: {summary['pending']} | Buy: {summary['buy_items']} | Sell: {summary['sell_items']}")
         print("=" * 60)
 
         if not pending:
-            print("\n   ✅ 所有任务已完成")
+            print("\n   All tasks completed.")
             return
 
         for item in pending:
-            icon = "[BUY]" if item['action'] == '买入' else "[SELL]"
+            icon = "[BUY]" if item['action'] == 'Buy' else "[SELL]"
             print(f"\n  {icon} {item['id']}: {item['ts_code']} {item['name']}")
-            print(f"     {item['action']} {item['suggested_quantity']}股 @ {item['suggested_price']}")
+            print(f"     {item['action']} {item['suggested_quantity']}shares @ {item['suggested_price']}")
             print(f"     Reason: {item['reason']}")
             print(f"     Strategy: {item['strategy']}")
 
         print("\n" + "=" * 60)
-        print("  请在东方财富APP中执行上述操作，完成后回到系统标记")
+        print("  Execute on your trading APP, then mark as done here.")
         print("=" * 60)
 
     def _save(self):

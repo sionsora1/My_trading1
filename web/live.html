@@ -698,6 +698,17 @@
             refreshOrders();
         }
 
+        async function updateConfig() {
+            const broker = document.getElementById('scanBroker').value;
+            const mode = document.getElementById('scanMode').value;
+            const strategy = document.getElementById('scanStrategy').value;
+            const r = await apiPost('/config', { broker, mode, strategy });
+            if (r.status === 'success') {
+                showToast(`配置已更新: ${r.data.mode_label} / ${r.data.strategy_label}`, 'info');
+                refreshAll();
+            }
+        }
+
         function updateInterval() {
             const v = document.getElementById('scanInterval').value;
             if (refreshTimer) clearInterval(refreshTimer);

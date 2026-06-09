@@ -161,17 +161,18 @@ class LiveTradingServer:
 
         # 风控检查
         order_side = OrderSide.BUY if side.upper() == 'BUY' else OrderSide.SELL
+        # 获取股票信息（名称等）
+        stock_info = self._get_stock_info(ts_code)
+
         request = OrderRequest(
             ts_code=ts_code,
             side=order_side,
             quantity=quantity,
             price=price,
             order_type=OrderType.MARKET if price == 0 else OrderType.LIMIT,
-            reason=reason
+            reason=reason,
+            stock_name=stock_info.get('name', ts_code),
         )
-
-        # 获取股票信息
-        stock_info = self._get_stock_info(ts_code)
 
         check = self.risk_manager.check_order(request, account, positions, stock_info)
         if not check.passed:
@@ -556,8 +557,19 @@ class LiveTradingServer:
                         })
                         continue
 
-                    weight = signal.weight or 0.20
+                    # 动态权重：基于实盘持仓上限计算，确保资金充分利用
+                    # 策略返回的 weight 是回测场景的（如5%），实盘需按上限数量重新算
+                    target_utilization = 0.90  # 总资金利用率90%（留10%缓冲）
+                    dynamic_weight = target_utilization / max(max_positions, 1)
+                    # 取策略权重和动态权重中较大的
+                    weight = max(signal.weight or 0, dynamic_weight)
+                    # 限制不超过风控的单只上限
+                    max_allowed = self.config.get('risk', {}).get('max_single_position_weight', 0.20)
+                    weight = min(weight, max_allowed)
+
                     target_amount = account.total_assets * weight
+                    # 确保不超过可用资金
+                    target_amount = min(target_amount, account.available_cash * 0.95)
                     quantity = int(target_amount / price / 100) * 100 if price > 0 else 100
                     quantity = max(quantity, 100)
                 elif signal.signal == 'SELL':
@@ -635,7 +647,8 @@ class LiveTradingServer:
                 'strategies_used': strategies_to_run,
                 'signals': [
                     {'ts_code': s.ts_code, 'name': s.name, 'signal': s.signal,
-                     'strategy': s.strategy, 'reason': s.reason}
+                     'strategy': s.strategy, 'reason': s.reason,
+                     'weight': s.weight, 'price': s.price}
                     for s in deduped_signals
                 ],
                 'trades': all_trades,
