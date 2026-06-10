@@ -16,7 +16,7 @@ DATA_CACHE_DIR = './data_cache'
 
 BACKTEST_CONFIG = {
     # 初始资金
-    'initial_capital': 1_000_000,
+    'initial_capital': 100_000,
 
     # 交易成本
     'commission_rate': 0.0003,     # 佣金费率万三
@@ -24,10 +24,10 @@ BACKTEST_CONFIG = {
     'slippage_rate': 0.002,        # 滑点0.2%
     'min_commission': 5.0,         # 最低佣金5元
 
-    # 持仓限制
-    'max_position_num': 20,        # 最大持仓数
-    'max_single_weight': 0.05,     # 单只最大仓位5%
-    'max_industry_weight': 0.20,   # 单行业最大仓位20%
+    # 持仓限制（基于10万初始资金）
+    'max_position_num': 5,         # 最大持仓数
+    'max_single_weight': 0.15,     # 单只最大仓位15%
+    'max_industry_weight': 0.30,   # 单行业最大仓位30%
 
     # 调仓设置
     'rebalance_frequency': 'weekly',  # daily/weekly/monthly
@@ -108,14 +108,14 @@ LIVE_TRADING_CONFIG = {
         'miniqmt_path': r'D:\QMT\userdata_mini',
     },
 
-    # 风控配置
+    # 风控配置（基于10万初始资金）
     'risk': {
         'max_daily_loss_rate': 0.02,         # 单日最大亏损2%
-        'max_single_position_weight': 0.20,  # 单只最大仓位20%
+        'max_single_position_weight': 0.15,  # 单只最大仓位15% (≈1.5万)
         'max_total_positions': 5,            # 最大持仓数5只
-        'max_single_order_amount': 50000,    # 单笔最大金额5万
+        'max_single_order_amount': 15000,    # 单笔最大金额1.5万
         'require_confirm_large': True,       # 大额需确认
-        'large_order_threshold': 20000,      # 大额阈值2万
+        'large_order_threshold': 5000,       # 大额阈值5000
     },
 
     # 信号扫描配置

@@ -67,8 +67,8 @@ class BacktestRequest(BaseModel):
     start_date: str
     end_date: str
     strategy_type: str = "eight_factor"  # eight_factor / position / both
-    initial_capital: float = 1000000
-    max_position: int = 20
+    initial_capital: float = 100000
+    max_position: int = 5
     stop_loss: float = -0.08
     move_stop: float = -0.10
     rebalance_frequency: str = "weekly"
@@ -234,7 +234,7 @@ async def analyze_market_regime(stock_pool: List[str], start_date: str, end_date
             strategy_scores[strategy_name] = score
 
         # 排序推荐策略
-        sorted_strategies = sorted(strategy_scores.items(), key=lambda x: x[1], reverse=True)
+        sorted_strategies = sorted(strategy_scores.items(), key=lambda x: (-x[1], x[0]))
 
         return {
             "status": "success",
@@ -650,7 +650,7 @@ async def get_suggestion(request: SuggestionRequest):
         latest_data = market_data[latest_date]
 
         # 3. 构造 portfolio
-        portfolio = {'cash': 1_000_000, 'positions': {}}
+        portfolio = {'cash': 100_000, 'positions': {}}
         if request.positions:
             for code, pos in request.positions.items():
                 if code in latest_data:
@@ -866,7 +866,13 @@ def get_live_server():
     if _live_server is None:
         from live_server import LiveTradingServer
         from config.settings import LIVE_TRADING_CONFIG
-        _live_server = LiveTradingServer(LIVE_TRADING_CONFIG)
+        import copy
+        config = copy.deepcopy(LIVE_TRADING_CONFIG)
+        # 从持久化文件加载股票池（而不是用 settings.py 的默认值）
+        persisted_pool = _load_stock_pool()
+        if persisted_pool:
+            config['scan']['stock_pool'] = [s['code'] for s in persisted_pool]
+        _live_server = LiveTradingServer(config)
     return _live_server
 
 
@@ -984,13 +990,24 @@ async def live_scan():
 
 @app.post("/api/live/start")
 async def live_start(background_tasks: BackgroundTasks,
-                     broker: Optional[str] = Body(None),
-                     mode: Optional[str] = Body(None)):
-    """启动实盘交易服务（可指定券商和模式）"""
+                     config_update: LiveConfigUpdate = LiveConfigUpdate(),
+                     # 兼容旧前端（query params）
+                     broker: Optional[str] = None,
+                     mode: Optional[str] = None,
+                     strategy: Optional[str] = None):
+    """启动实盘交易服务（可指定券商、模式、策略等）"""
     global _live_server
 
-    # 如果指定了不同券商/模式，重建服务实例
-    if broker or mode:
+    # 合并 query params（兼容旧调用方式）
+    broker = broker or config_update.broker
+    mode = mode or config_update.mode
+    strategy = strategy or config_update.strategy
+    stock_pool = config_update.stock_pool
+    interval_seconds = config_update.interval_seconds
+
+    need_rebuild = bool(broker or mode or strategy or stock_pool or interval_seconds)
+
+    if need_rebuild:
         if _live_server and _live_server.running:
             _live_server.stop()
 
@@ -998,17 +1015,29 @@ async def live_start(background_tasks: BackgroundTasks,
         from config.settings import LIVE_TRADING_CONFIG
         import copy
         config = copy.deepcopy(LIVE_TRADING_CONFIG)
+
         if broker:
             config['broker'] = broker
         if mode:
             config['mode'] = mode
+        if strategy:
+            config['scan']['strategy'] = strategy
+        if interval_seconds:
+            config['scan']['interval_seconds'] = interval_seconds
 
-        # 修复：从已保存的股票池文件读取（而不是用配置默认值）
-        saved_pool = _load_stock_pool()
-        if saved_pool:
-            config['scan']['stock_pool'] = [s['code'] for s in saved_pool]
+        if stock_pool:
+            config['scan']['stock_pool'] = stock_pool
+        else:
+            persisted_pool = _load_stock_pool()
+            if persisted_pool:
+                config['scan']['stock_pool'] = [s['code'] for s in persisted_pool]
 
         _live_server = LiveTradingServer(config)
+    else:
+        server = get_live_server()
+        persisted_pool = _load_stock_pool()
+        if persisted_pool:
+            server.config['scan']['stock_pool'] = [s['code'] for s in persisted_pool]
 
     server = get_live_server()
     result = server.start(background=True)

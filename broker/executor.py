@@ -164,28 +164,36 @@ class TradeChecklist:
 
     def print_checklist(self):
         """打印清单到控制台"""
+        import sys
         summary = self.get_summary()
         pending = self.get_pending()
 
-        print("\n" + "=" * 60)
-        print("[Trade Checklist]")
-        print(f"   Pending: {summary['pending']} | Buy: {summary['buy_items']} | Sell: {summary['sell_items']}")
-        print("=" * 60)
+        def safe_print(msg):
+            """安全打印，避免 Windows GBK 编码报错"""
+            try:
+                print(msg)
+            except UnicodeEncodeError:
+                print(msg.encode('ascii', errors='replace').decode('ascii'))
+
+        safe_print("\n" + "=" * 60)
+        safe_print("[交易执行清单]")
+        safe_print(f"   待执行: {summary['pending']} | 买入: {summary['buy_items']} | 卖出: {summary['sell_items']}")
+        safe_print("=" * 60)
 
         if not pending:
-            print("\n   All tasks completed.")
+            safe_print("\n   [OK] 所有任务已完成")
             return
 
         for item in pending:
-            icon = "[BUY]" if item['action'] == 'Buy' else "[SELL]"
-            print(f"\n  {icon} {item['id']}: {item['ts_code']} {item['name']}")
-            print(f"     {item['action']} {item['suggested_quantity']}shares @ {item['suggested_price']}")
-            print(f"     Reason: {item['reason']}")
-            print(f"     Strategy: {item['strategy']}")
+            icon = "[BUY]" if item['action'] == '买入' else "[SELL]"
+            safe_print(f"\n  {icon} {item['id']}: {item['ts_code']} {item['name']}")
+            safe_print(f"     {item['action']} {item['suggested_quantity']}股 @ {item['suggested_price']}")
+            safe_print(f"     Reason: {item['reason']}")
+            safe_print(f"     Strategy: {item['strategy']}")
 
-        print("\n" + "=" * 60)
-        print("  Execute on your trading APP, then mark as done here.")
-        print("=" * 60)
+        safe_print("\n" + "=" * 60)
+        safe_print("  请在东方财富APP中执行上述操作，完成后回到系统标记")
+        safe_print("=" * 60)
 
     def _save(self):
         """保存到文件"""

@@ -613,9 +613,10 @@
         async function startLive() {
             const broker = document.getElementById('scanBroker').value;
             const mode = document.getElementById('scanMode').value;
-            const r = await apiPost('/start', { broker, mode });
+            const strategy = document.getElementById('scanStrategy').value;
+            const r = await apiPost('/start', { broker, mode, strategy });
             if (r.status === 'success') {
-                showToast(`实盘服务已启动 (${broker === 'ths' ? '同花顺' : broker === 'qmt' ? 'QMT' : '模拟盘'} / ${mode === 'auto' ? '全自动' : '半自动'})`, 'success');
+                showToast(`实盘服务已启动 (${broker === 'ths' ? '同花顺' : broker === 'qmt' ? 'QMT' : '模拟盘'} / ${mode === 'auto' ? '全自动' : '半自动'} / ${strategy})`, 'success');
             } else {
                 showToast('启动失败: ' + (r.data?.message || '未知错误'), 'error');
             }

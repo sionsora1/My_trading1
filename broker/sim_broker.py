@@ -42,7 +42,7 @@ class SimBroker(BaseBroker):
         self.name = '模拟盘'
 
         # 交易参数
-        self.initial_capital = self.config.get('initial_capital', 1_000_000)
+        self.initial_capital = self.config.get('initial_capital', 100_000)
         self.commission_rate = self.config.get('commission_rate', self.DEFAULT_COMMISSION_RATE)
         self.stamp_tax_rate = self.config.get('stamp_tax_rate', self.DEFAULT_STAMP_TAX_RATE)
         self.slippage_rate = self.config.get('slippage_rate', self.DEFAULT_SLIPPAGE_RATE)

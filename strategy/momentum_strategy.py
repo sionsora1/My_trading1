@@ -36,8 +36,8 @@ class MomentumStrategy(BaseStrategy):
             score = stock.get('return_20d', 0)
             momentum_scores[code] = score
 
-        # 按动量排序
-        sorted_stocks = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
+        # 按动量排序（-score 降序 + 代码升序，平局时结果稳定可重现）
+        sorted_stocks = sorted(momentum_scores.items(), key=lambda x: (-x[1], x[0]))
 
         # 选前N只
         selected_codes = set(code for code, score in sorted_stocks[:self.top_n] if score > 0)
@@ -97,7 +97,7 @@ class MeanReversionStrategy(BaseStrategy):
                 reversion_scores[code] = -return_20d
 
         # 按超跌程度排序
-        sorted_stocks = sorted(reversion_scores.items(), key=lambda x: x[1], reverse=True)
+        sorted_stocks = sorted(reversion_scores.items(), key=lambda x: (-x[1], x[0]))
 
         # 选前N只
         selected_codes = set(code for code, score in sorted_stocks[:self.top_n])
@@ -159,7 +159,7 @@ class ValueStrategy(BaseStrategy):
             value_scores[code] = score
 
         # 按价值排序
-        sorted_stocks = sorted(value_scores.items(), key=lambda x: x[1], reverse=True)
+        sorted_stocks = sorted(value_scores.items(), key=lambda x: (-x[1], x[0]))
 
         # 选前N只
         selected_codes = set(code for code, score in sorted_stocks[:self.top_n])
@@ -220,7 +220,7 @@ class QualityStrategy(BaseStrategy):
             quality_scores[code] = score
 
         # 按质量排序
-        sorted_stocks = sorted(quality_scores.items(), key=lambda x: x[1], reverse=True)
+        sorted_stocks = sorted(quality_scores.items(), key=lambda x: (-x[1], x[0]))
 
         # 选前N只
         selected_codes = set(code for code, score in sorted_stocks[:self.top_n])
@@ -278,7 +278,7 @@ class LowVolatilityStrategy(BaseStrategy):
                 low_vol_scores[code] = 1 - volatility
 
         # 按波动率排序（低的在前）
-        sorted_stocks = sorted(low_vol_scores.items(), key=lambda x: x[1], reverse=True)
+        sorted_stocks = sorted(low_vol_scores.items(), key=lambda x: (-x[1], x[0]))
 
         # 选前N只
         selected_codes = set(code for code, score in sorted_stocks[:self.top_n])

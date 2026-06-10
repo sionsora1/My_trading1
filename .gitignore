@@ -3,12 +3,17 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Runtime data (auto-generated)
+# Runtime state (auto-generated, don't commit)
 data_cache/sim_account.json
 data_cache/signals.json
 data_cache/risk_state.json
 data_cache/trade_checklist.json
+data_cache/trade_history.json
 data_cache/*_market_data*.json
+data_cache/market_data_*.json
+data_cache/live_market_*.json
+data_cache/live_market_rt_*.json
+data_cache/live_stock_pool.json
 
 # Logs
 server.log

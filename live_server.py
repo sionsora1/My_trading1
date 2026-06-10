@@ -711,10 +711,13 @@ class LiveTradingServer:
         return {'status': 'stopped'}
 
     def _scan_loop(self, interval: int):
-        """后台扫描循环"""
+        """后台扫描循环（带随机抖动，避免固定频率被封IP）"""
+        import random as _random
         while self.running:
             try:
-                time.sleep(interval)
+                # 随机抖动 ±15%，避免每次都卡在同一个秒数
+                jitter = interval * (0.85 + _random.random() * 0.30)
+                time.sleep(jitter)
                 if not self.running:
                     break
                 self.scan_and_trade()
@@ -727,18 +730,39 @@ class LiveTradingServer:
     # ============================================================
 
     def _fetch_market_data(self, stock_pool: list, start_date: str, end_date: str) -> dict:
-        """获取行情数据（带缓存）"""
-        cache_filename = f'live_market_{end_date}_{len(stock_pool)}stocks'
+        """获取行情数据（优先实时行情，失败则回退日线）"""
+        cache_filename = f'live_market_rt_{len(stock_pool)}stocks'
+
+        # 先查实时缓存（TTL 60秒）
         market_data = self.cache.load_market_data(cache_filename)
-
         if market_data and isinstance(market_data, dict) and len(market_data) > 0:
-            return market_data
+            # 检查缓存是否过期
+            first_key = next(iter(market_data))
+            first_date = next(iter(market_data[first_key].values()) if market_data[first_key] else {})
+            cache_time = first_date.get('_cached_at', 0) if isinstance(first_date, dict) else 0
+            if cache_time and time.time() - cache_time < 60:
+                return market_data
 
+        # 尝试实时行情
+        try:
+            rt_data = self.fetcher.build_realtime_market_data(stock_pool)
+            if rt_data:
+                # 给每条数据打上缓存时间戳
+                today = datetime.now().strftime('%Y%m%d')
+                if today in rt_data:
+                    for code in rt_data[today]:
+                        rt_data[today][code]['_cached_at'] = time.time()
+                # 缓存实时数据（短时间有效）
+                self.cache.save_market_data(rt_data, cache_filename)
+                print(f"[实盘] 实时行情获取成功，{len(rt_data.get(today, {}))} 只股票")
+                return rt_data
+        except Exception as e:
+            print(f"[实盘] 实时行情获取失败: {e}，回退日线数据")
+
+        # 回退：日线数据
         market_data = self.fetcher.build_market_data_by_date(stock_pool, start_date, end_date)
-
         if market_data and len(market_data) > 0:
             self.cache.save_market_data(market_data, cache_filename)
-
         return market_data
 
     def _get_stock_info(self, ts_code: str) -> dict:

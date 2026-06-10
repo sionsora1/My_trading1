@@ -105,7 +105,7 @@ class EightFactorStrategy(BaseStrategy):
         current_hold_codes = set(current_positions.keys()) - sell_codes
 
         # 5. 按得分排序，选前N只
-        sorted_stocks = sorted(normalized_scores.items(), key=lambda x: x[1], reverse=True)
+        sorted_stocks = sorted(normalized_scores.items(), key=lambda x: (-x[1], x[0]))
         target_num = self.max_position_num - len(current_hold_codes)
         target_num = max(0, target_num)
 

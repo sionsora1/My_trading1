@@ -15,13 +15,13 @@ from config.settings import BACKTEST_CONFIG
 @dataclass
 class BacktestConfig:
     """回测配置"""
-    initial_capital: float = 1_000_000
+    initial_capital: float = 100_000
     commission_rate: float = 0.0003
     stamp_tax_rate: float = 0.0005
     slippage_rate: float = 0.002
     min_commission: float = 5.0
-    max_position_num: int = 20
-    max_single_weight: float = 0.05
+    max_position_num: int = 5
+    max_single_weight: float = 0.15
     stop_loss_rate: float = -0.08
     move_stop_rate: float = -0.10
     limit_up_rate: float = 0.10

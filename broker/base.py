@@ -115,12 +115,12 @@ class Signal:
 class DailyRiskLimit:
     """日风控限制"""
     max_daily_loss_rate: float = 0.02      # 单日最大亏损2%
-    max_single_position_weight: float = 0.05  # 单只最大仓位5%
-    max_total_positions: int = 20           # 最大持仓数
-    max_single_order_amount: float = 200000  # 单笔最大20万
+    max_single_position_weight: float = 0.15  # 单只最大仓位15%
+    max_total_positions: int = 5            # 最大持仓数
+    max_single_order_amount: float = 15000   # 单笔最大1.5万
     blacklist: List[str] = field(default_factory=list)  # 黑名单股票
     require_confirm_large: bool = True       # 大额需确认
-    large_order_threshold: float = 50000     # 大额阈值
+    large_order_threshold: float = 5000      # 大额阈值
 
 
 class BaseBroker(ABC):

@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 import time
 import os
 import json
+import random
+import requests
 
 from config.settings import DATA_CACHE_DIR
 
@@ -49,6 +51,128 @@ class DataFetcher:
         df['list_date'] = ''
 
         return df[['ts_code', 'symbol', 'name', 'area', 'industry', 'market', 'list_date']]
+
+    # ============================================================
+    # 实时行情（东方财富API，无需token）
+    # ============================================================
+
+    def get_realtime_quotes(self, stock_pool: list) -> dict:
+        """
+        获取实时行情快照
+
+        Args:
+            stock_pool: 股票代码列表，如 ['600519', '002415']
+
+        Returns:
+            {ts_code: {name, close(现价), open, high, low, volume, amount, change_pct, bid1, ask1, ...}}
+        """
+        if not stock_pool:
+            return {}
+
+        # 非交易时段不请求实时行情（节约请求，避免空数据）
+        now = datetime.now()
+        h, m, w = now.hour, now.minute, now.weekday()
+        if w >= 5 or not ((h == 9 and m >= 25) or (10 <= h <= 11) or (13 <= h <= 14) or (h == 15 and m <= 5)):
+            return {}
+
+        # 构造东方财富市场代码
+        codes = []
+        code_map = {}  # code -> code
+        for code in stock_pool:
+            code = str(code).split('.')[0]
+            if code.startswith('6'):
+                em_code = f'1.{code}'
+            else:
+                em_code = f'0.{code}'
+            codes.append(em_code)
+            code_map[str(code)] = code
+
+        # 分批请求（使用 Session 保持连接，模拟浏览器）
+        results = {}
+        batch_size = 50
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'Referer': 'http://quote.eastmoney.com/',
+            'Connection': 'keep-alive',
+        })
+
+        for i in range(0, len(codes), batch_size):
+            batch = codes[i:i + batch_size]
+            secids = ','.join(batch)
+
+            try:
+                url = 'http://push2.eastmoney.com/api/qt/ulist.np/get'
+                params = {
+                    'fltt': '2',
+                    'invt': '2',
+                    'fields': 'f2,f3,f4,f5,f6,f7,f12,f14,f15,f16,f17,f18',
+                    'secids': secids,
+                    '_': int(time.time() * 1000),
+                }
+                resp = session.get(url, params=params, timeout=10)
+                if resp.status_code != 200:
+                    continue
+
+                data = resp.json()
+                if not data.get('data') or not data['data'].get('diff'):
+                    continue
+
+                for item in data['data']['diff']:
+                    em_code = item.get('f12', '')
+                    ts_code = code_map.get(str(em_code))
+                    if not ts_code:
+                        # 尝试通过市场代码匹配
+                        market = item.get('f13', 0)
+                        ts_code = str(em_code)
+                        if market == 1:
+                            ts_code = f"SH{em_code}"
+                        elif market == 0:
+                            ts_code = f"SZ{em_code}"
+
+                    clean_code = ts_code.replace('SH', '').replace('SZ', '')
+
+                    results[clean_code] = {
+                        'name': item.get('f14', ''),
+                        'ts_code': clean_code,
+                        'close': item.get('f2', 0) or 0,       # 最新价
+                        'change_pct': item.get('f3', 0) or 0,   # 涨跌幅
+                        'change': item.get('f4', 0) or 0,       # 涨跌额
+                        'volume': item.get('f5', 0) or 0,       # 成交量
+                        'amount': item.get('f6', 0) or 0,       # 成交额
+                        'turnover': item.get('f7', 0) or 0,     # 换手率
+                        'high': item.get('f15', 0) or 0,        # 最高
+                        'low': item.get('f16', 0) or 0,         # 最低
+                        'open': item.get('f17', 0) or 0,        # 今开
+                        'pre_close': item.get('f18', 0) or 0,   # 昨收
+                    }
+
+            except Exception as e:
+                print(f"[DataFetcher] 实时行情请求失败 (batch {i}): {e}")
+                continue
+
+            # 随机间隔 0.5~1.5 秒，避免被识别为爬虫
+            if i + batch_size < len(codes):
+                time.sleep(0.5 + random.random())
+
+        return results
+
+    def build_realtime_market_data(self, stock_pool: list) -> dict:
+        """
+        构建实时行情数据，格式兼容 build_market_data_by_date
+
+        Returns:
+            {today_date: {ts_code: {close, name, open, high, low, volume, ...}}}
+        """
+        quotes = self.get_realtime_quotes(stock_pool)
+        today = datetime.now().strftime('%Y%m%d')
+
+        if not quotes:
+            return {}
+
+        return {today: quotes}
 
     # ============================================================
     # 日线行情（多数据源支持）
