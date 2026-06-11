@@ -178,6 +178,8 @@ class BacktestEngine:
         # 按持仓数动态计算单只权重，确保资金利用率
         dynamic_weight = 0.90 / max(self.config.max_position_num, 1)
         weight = max(target_weight, dynamic_weight)
+        # 不超过配置的单只仓位上限
+        weight = min(weight, self.config.max_single_weight)
         target_amount = portfolio['total_value'] * weight
         available_amount = min(target_amount, self.cash * 0.95)
         quantity = int(available_amount / price / 100) * 100
@@ -190,12 +192,12 @@ class BacktestEngine:
         return 0
 
     def check_t_plus_1(self, ts_code: str, current_date: str) -> bool:
-        """检查T+1限制"""
+        """检查T+1限制：返回True表示可卖出"""
         if not self.config.t_plus_1:
             return True
-        if ts_code in self.positions:
-            return current_date > self.positions[ts_code].entry_date
-        return False
+        if ts_code not in self.positions:
+            return False  # 无持仓，不能卖出
+        return current_date > self.positions[ts_code].entry_date
 
     def check_stop_loss(self, ts_code: str, current_price: float) -> bool:
         """检查止损"""

@@ -738,10 +738,12 @@ class LiveTradingServer:
         if market_data and isinstance(market_data, dict) and len(market_data) > 0:
             # 检查缓存是否过期
             first_key = next(iter(market_data))
-            first_date = next(iter(market_data[first_key].values()) if market_data[first_key] else {})
-            cache_time = first_date.get('_cached_at', 0) if isinstance(first_date, dict) else 0
-            if cache_time and time.time() - cache_time < 60:
-                return market_data
+            first_day_data = market_data.get(first_key, {})
+            if first_day_data:
+                first_stock = next(iter(first_day_data.values()), {})
+                cache_time = first_stock.get('_cached_at', 0) if isinstance(first_stock, dict) else 0
+                if cache_time and time.time() - cache_time < 60:
+                    return market_data
 
         # 尝试实时行情
         try:

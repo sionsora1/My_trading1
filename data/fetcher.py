@@ -577,7 +577,7 @@ class DataFetcher:
                         'high': row['high'],
                         'low': row['low'],
                         'volume': row['vol'],
-                        'prev_close': close * (1 - row.get('pct_chg', 0) / 100) if 'pct_chg' in row and not pd.isna(row.get('pct_chg')) else close,
+                        'prev_close': close / (1 + row['pct_chg'] / 100) if 'pct_chg' in row and not pd.isna(row['pct_chg']) and row['pct_chg'] != -100 else close,
                         'trade_date': date,
                         'ma5': safe_val(row.get('ma5'), close),
                         'ma10': safe_val(row.get('ma10'), close),

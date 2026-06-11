@@ -178,7 +178,8 @@ class SimBroker(BaseBroker):
             total_qty = pos.quantity + quantity
             avg_cost = (pos.cost_price * pos.quantity + fill_price * quantity) / total_qty
             pos.quantity = total_qty
-            pos.available_quantity = total_qty  # 新买的当天不可卖（T+1）
+            # T+1：旧持仓保持可卖，新买的当天不可卖
+            pos.available_quantity = pos.available_quantity  # 不变
             pos.cost_price = avg_cost
             pos.market_value = fill_price * total_qty
             pos.profit = (fill_price - avg_cost) * total_qty
@@ -255,9 +256,6 @@ class SimBroker(BaseBroker):
                 if order.status == OrderStatus.PENDING:
                     order.status = OrderStatus.CANCELLED
                     order.update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    # 释放冻结资金
-                    if order.side == OrderSide.BUY and order.status == OrderStatus.PENDING:
-                        self._frozen_cash -= order.price * order.quantity * 1.001
                     return True
         return False
 

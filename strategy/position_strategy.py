@@ -24,26 +24,29 @@ class PositionStrategy(BaseStrategy):
         self.max_single_weight = self.config.get('max_single_weight', BACKTEST_CONFIG['max_single_weight'])
 
     def judge_position(self, stock: dict) -> str:
-        """判断股票所处位置"""
-        # 低位信号：价格低于均线 + 近期下跌
+        """判断股票所处位置（使用POSITION_CONFIG阈值）"""
+        cfg = self.pos_config
+
+        # 低位信号
         low_signals = 0
-        low_signals += stock.get('close', 0) < stock.get('ma20', 0)  # 低于20日均线
-        low_signals += stock.get('close', 0) < stock.get('ma60', 0)  # 低于60日均线
-        low_signals += stock.get('return_20d', 0) < -0.05  # 近20日跌幅超5%
-        low_signals += stock.get('return_60d', 0) < -0.10  # 近60日跌幅超10%
-        low_signals += stock.get('return_1d', 0) < -0.02  # 今日跌幅超2%
+        low_signals += 1 if stock.get('close', 0) < stock.get('ma20', 0) else 0
+        low_signals += 1 if stock.get('close', 0) < stock.get('ma60', 0) else 0
+        low_signals += 1 if stock.get('return_20d', 0) < -0.05 else 0
+        low_signals += 1 if stock.get('return_60d', 0) < cfg.get('low_return_60d', 0) else 0
+        low_signals += 1 if stock.get('price_percentile_1y', 0.5) < cfg.get('low_price_percentile', 0.30) else 0
 
-        # 高位信号：价格高于均线 + 近期上涨
+        # 高位信号
         high_signals = 0
-        high_signals += stock.get('close', 0) > stock.get('ma20', 0) * 1.05  # 高于20日均线5%
-        high_signals += stock.get('close', 0) > stock.get('ma60', 0) * 1.10  # 高于60日均线10%
-        high_signals += stock.get('return_20d', 0) > 0.15  # 近20日涨幅超15%
-        high_signals += stock.get('return_60d', 0) > 0.30  # 近60日涨幅超30%
+        high_signals += 1 if stock.get('close', 0) > stock.get('ma20', 0) * 1.05 else 0
+        high_signals += 1 if stock.get('close', 0) > stock.get('ma60', 0) * 1.10 else 0
+        high_signals += 1 if stock.get('return_20d', 0) > 0.15 else 0
+        high_signals += 1 if stock.get('return_60d', 0) > cfg.get('high_return_60d', 0.30) else 0
+        high_signals += 1 if stock.get('price_percentile_1y', 0.5) > cfg.get('high_price_percentile', 0.70) else 0
 
-        # 降低阈值：满足2个即判断
-        if low_signals >= 2:
+        # 使用配置的阈值判断
+        if low_signals >= cfg.get('low_signals_threshold', 2):
             return '低位'
-        elif high_signals >= 2:
+        elif high_signals >= cfg.get('high_signals_threshold', 2):
             return '高位'
         return '中位'
 

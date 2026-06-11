@@ -59,33 +59,39 @@ class MatchEngine:
         slippage = price * self.slippage_rate
         return slippage if side == OrderSide.BUY else -slippage
 
-    def check_limit(self, open_price: float, prev_close: float) -> tuple:
-        """检查涨跌停"""
+    def check_limit(self, open_price: float, prev_close: float) -> dict:
+        """检查涨跌停，返回各方向是否可交易"""
         limit_up = round(prev_close * (1 + self.limit_up_rate), 2)
         limit_down = round(prev_close * (1 + self.limit_down_rate), 2)
 
-        if open_price >= limit_up:
-            return False, limit_up, limit_down
-        if open_price <= limit_down:
-            return False, limit_up, limit_down
+        can_buy = open_price < limit_up     # 涨停时不能买入
+        can_sell = open_price > limit_down  # 跌停时不能卖出
 
-        return True, limit_up, limit_down
+        return {
+            'can_buy': can_buy,
+            'can_sell': can_sell,
+            'limit_up': limit_up,
+            'limit_down': limit_down,
+            'at_limit_up': open_price >= limit_up,
+            'at_limit_down': open_price <= limit_down,
+        }
 
     def match_order(self, order: Order, stock_data: dict, prev_close: float) -> Order:
         """撮合订单"""
         open_price = stock_data.get('open', stock_data.get('close', 0))
 
-        can_trade, _, _ = self.check_limit(open_price, prev_close)
+        limit_up = round(prev_close * (1 + self.limit_up_rate), 2)
+        limit_down = round(prev_close * (1 + self.limit_down_rate), 2)
 
-        if not can_trade:
-            if order.side == OrderSide.BUY:
-                order.status = OrderStatus.REJECTED
-                order.reject_reason = '涨停无法买入'
-                return order
-            else:
-                order.status = OrderStatus.REJECTED
-                order.reject_reason = '跌停无法卖出'
-                return order
+        # 涨停时不能买入（但可以卖出），跌停时不能卖出（但可以买入）
+        if order.side == OrderSide.BUY and open_price >= limit_up:
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = '涨停无法买入'
+            return order
+        if order.side == OrderSide.SELL and open_price <= limit_down:
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = '跌停无法卖出'
+            return order
 
         base_price = open_price
         slippage = self.calculate_slippage(base_price, order.side)

@@ -65,15 +65,23 @@ class ParamSpace:
 
 
 class ObjectiveFunction:
-    """目标函数"""
+    """目标函数 —— 使用真实回测引擎评估参数"""
 
     def __init__(self, market_data: dict, base_config: dict = None):
         self.market_data = market_data
         self.base_config = base_config or {}
+        self._cache = {}  # 缓存回测结果，避免重复计算
+
+    def _params_key(self, params: dict) -> str:
+        """生成参数缓存键"""
+        return str(sorted(params.items()))
 
     def evaluate(self, params: dict) -> float:
         """评估参数组合，返回综合得分"""
-        metrics = self.run_backtest(params)
+        key = self._params_key(params)
+        if key not in self._cache:
+            self._cache[key] = self.run_backtest(params)
+        metrics = self._cache[key]
 
         score = metrics.get('sharpe_ratio', 0)
 
@@ -89,48 +97,59 @@ class ObjectiveFunction:
         return score
 
     def run_backtest(self, params: dict) -> dict:
-        """运行单次回测"""
-        np.random.seed(hash(str(sorted(params.items()))) % 2**32)
+        """
+        使用真实回测引擎评估参数（结果会被缓存）
+        """
+        key = self._params_key(params)
+        if key in self._cache:
+            return self._cache[key]
 
-        w_EP = params.get('w_EP', 0.15)
-        w_growth = params.get('w_growth', 0.15)
-        w_reversal = params.get('w_reversal', 0.15)
-        w_quality = params.get('w_quality', 0.10)
-        max_pos = params.get('max_position_num', 20)
-        stop_loss = params.get('stop_loss_rate', -0.08)
+        from backtest.engine import BacktestEngine, BacktestConfig
+        from strategy.eight_factor import EightFactorStrategy
+        from config.settings import FACTOR_WEIGHTS, BACKTEST_CONFIG
+        import copy
 
-        total_weight = w_EP + w_growth + w_reversal + w_quality
-        if total_weight > 0:
-            w_EP /= total_weight
-            w_growth /= total_weight
-            w_reversal /= total_weight
-            w_quality /= total_weight
-
-        base_return = 0.15
-        return_adj = (
-            (w_EP - 0.15) * 2 +
-            (w_growth - 0.15) * 1.5 +
-            (w_reversal - 0.15) * 3 +
-            (w_quality - 0.10) * 1
-        )
-        pos_adj = -0.001 * (max_pos - 20) ** 2
-        stop_adj = 2 * (stop_loss + 0.08) ** 2
-        noise = np.random.normal(0, 0.02)
-
-        total_return = base_return + return_adj + pos_adj + stop_adj + noise
-        max_drawdown = -0.12 + np.random.normal(0, 0.02)
-        sharpe = total_return / 0.15 + np.random.normal(0, 0.1)
-
-        return {
-            'total_return': total_return,
-            'annual_return': total_return,
-            'max_drawdown': max_drawdown,
-            'sharpe_ratio': sharpe,
-            'calmar_ratio': total_return / abs(max_drawdown) if max_drawdown != 0 else 0,
-            'win_rate': 0.52 + np.random.normal(0, 0.03),
-            'profit_loss_ratio': 1.2 + np.random.normal(0, 0.1),
-            'annual_turnover': 10 + np.random.normal(0, 2),
+        # 1. 构建因子权重
+        custom_weights = copy.deepcopy(FACTOR_WEIGHTS)
+        weight_map = {
+            'w_EP': 'EP',
+            'w_growth': 'profit_growth',
+            'w_reversal': 'reversal_20d',
+            'w_quality': 'ROE',
         }
+        for param_key, weight_key in weight_map.items():
+            if param_key in params:
+                custom_weights[weight_key] = params[param_key]
+
+        # 归一化权重
+        total = sum(custom_weights.values())
+        if total > 0:
+            for k in custom_weights:
+                custom_weights[k] /= total
+
+        # 2. 构建回测配置
+        bt_dict = copy.deepcopy(BACKTEST_CONFIG)
+        if 'max_position_num' in params:
+            bt_dict['max_position_num'] = int(params['max_position_num'])
+        if 'stop_loss_rate' in params:
+            bt_dict['stop_loss_rate'] = params['stop_loss_rate']
+        bt_dict['rebalance_frequency'] = 'weekly'
+        config = BacktestConfig.from_dict(bt_dict)
+
+        # 3. 创建引擎和策略
+        engine = BacktestEngine(config)
+        strategy = EightFactorStrategy({
+            'max_position_num': config.max_position_num,
+            'max_single_weight': config.max_single_weight,
+            'max_industry_weight': bt_dict.get('max_industry_weight', 0.30),
+        })
+        strategy.factor_engine.weights = custom_weights
+
+        # 4. 运行回测（不打印每日报告，提高速度）
+        result = engine.run(self.market_data, strategy, print_report=False)
+
+        self._cache[key] = result['metrics']
+        return result['metrics']
 
 
 class GridSearchOptimizer:

@@ -40,14 +40,16 @@ class EightFactorStrategy(BaseStrategy):
         pos = positions[ts_code]
         reasons = []
 
-        # 1. 止损
-        if pos['profit_rate'] < -0.08:
+        # 1. 止损（使用配置值）
+        stop_loss = BACKTEST_CONFIG.get('stop_loss_rate', -0.08)
+        if pos['profit_rate'] < stop_loss:
             reasons.append(f"止损（亏损{pos['profit_rate']:.1%}）")
 
-        # 2. 移动止盈
+        # 2. 移动止盈（使用配置值）
         if pos.get('highest_price', 0) > 0:
             drawdown = (stock.get('close', 0) - pos['highest_price']) / pos['highest_price']
-            if drawdown < -0.10 and pos['profit_rate'] > 0:
+            move_stop = BACKTEST_CONFIG.get('move_stop_rate', -0.10)
+            if drawdown < move_stop and pos['profit_rate'] > 0:
                 reasons.append(f"移动止盈（从最高点回撤{drawdown:.1%}）")
 
         # 3. 趋势破坏
@@ -117,11 +119,12 @@ class EightFactorStrategy(BaseStrategy):
             if ts_code not in current_hold_codes and ts_code not in sell_codes:
                 if ts_code in market_data:
                     stock = market_data[ts_code]
-                    # 行业分散约束
+                    # 行业分散约束：每个行业最多 max_position_num * 0.6 只
+                    max_per_industry = max(1, int(self.max_position_num * 0.6))
                     industry = stock.get('industry', '')
                     industry_count = sum(1 for code in current_hold_codes
                                         if market_data.get(code, {}).get('industry', '') == industry)
-                    if industry_count < 3:  # 每个行业最多3只
+                    if industry_count < max_per_industry:
                         selected_codes.add(ts_code)
 
         for ts_code in selected_codes:
@@ -139,10 +142,9 @@ class EightFactorStrategy(BaseStrategy):
             if ts_code not in selected_codes and ts_code not in sell_codes:
                 # 检查是否应该卖出（因子排名下降太多）
                 if ts_code in normalized_scores:
-                    # 计算排名
-                    all_scores = sorted(normalized_scores.values(), reverse=True)
-                    score = normalized_scores[ts_code]
-                    rank = all_scores.index(score) + 1 if score in all_scores else len(all_scores)
+                    # 计算排名（正确处理同分情况）
+                    sorted_items = sorted(normalized_scores.items(), key=lambda x: (-x[1], x[0]))
+                    rank = next((i + 1 for i, (code, _) in enumerate(sorted_items) if code == ts_code), len(sorted_items))
 
                     if rank > self.max_position_num * 1.5:  # 排名下降太多才卖出
                         signals.append({

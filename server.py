@@ -1042,11 +1042,11 @@ async def live_start(background_tasks: BackgroundTasks,
     server = get_live_server()
     result = server.start(background=True)
 
-    # 同步更新实时行情
+    # 同步更新实时行情（在线程池中执行，避免阻塞事件循环）
     async def update_prices_periodically():
         while server.running:
             await asyncio.sleep(30)
-            server.update_market_prices()
+            await asyncio.to_thread(server.update_market_prices)
 
     if result.get('status') == 'started':
         background_tasks.add_task(update_prices_periodically)
