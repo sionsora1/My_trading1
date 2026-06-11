@@ -315,29 +315,138 @@ class DataFetcher:
     # 财务数据
     # ============================================================
 
-    def get_financial_data(self, symbol: str) -> pd.DataFrame:
-        """获取财务数据"""
+    def get_financial_data(self, symbol: str) -> dict:
+        """
+        获取财务数据（基于 stock_financial_abstract）
+        返回结构化的关键财务指标字典
+        """
         import akshare as ak
 
         try:
-            df = ak.stock_financial_analysis_indicator(symbol=symbol)
-            if not df.empty:
-                df = df.rename(columns={
-                    '日期': 'end_date',
-                    '净资产收益率': 'roe',
-                    '销售毛利率': 'grossprofit_margin',
-                })
-                return df
-        except:
-            pass
+            df = ak.stock_financial_abstract(symbol=symbol)
+            if df.empty:
+                return self._empty_financial()
 
-        return pd.DataFrame()
+            # stock_financial_abstract 返回: 列0=分类, 列1=指标名, 列2+=各季度数据
+            # 直接用行号定位，避免中文编码匹配问题
+            # AKShare stock_financial_abstract 的行号是固定的
+            def row_val(row_idx):
+                """获取指定行的最新季度值"""
+                try:
+                    v = df.iloc[row_idx, 2]  # 列2 = 最新季度
+                    return float(v) if pd.notna(v) else None
+                except (ValueError, TypeError, IndexError):
+                    return None
 
-    def calculate_growth(self, financial_df: pd.DataFrame) -> dict:
-        """计算成长指标"""
-        if financial_df.empty:
-            return {'profit_growth': 0, 'revenue_growth': 0}
-        return {'profit_growth': 0.1, 'revenue_growth': 0.08}
+            def row_yoy(row_idx):
+                """同比增长率（最新期 vs 去年同期）"""
+                current = row_val(row_idx)
+                prev = None
+                try:
+                    v = df.iloc[row_idx, prev_year_col] if prev_year_col >= 2 else None
+                    prev = float(v) if pd.notna(v) else None
+                except (ValueError, TypeError, IndexError):
+                    pass
+                if current is not None and prev is not None and prev != 0:
+                    return (current - prev) / abs(prev)
+                return None
+
+            # 找到去年同期列的索引
+            prev_year_col = -1
+            for j, col in enumerate(df.columns[2:], start=2):
+                try:
+                    y, rest = int(str(col)[:4]), str(col)[4:]
+                    if str(y - 1) + rest == str(df.columns[2]):
+                        prev_year_col = j
+                        break
+                except (ValueError, IndexError):
+                    continue
+
+            # Row 0: 归母净利润
+            net_profit = row_val(0)
+            # Row 1: 营业总收入
+            revenue = row_val(1)
+            # Row 3: 净利润
+            net_income = row_val(3)
+            # Row 5: 股东权益合计(净资产)
+            net_assets = row_val(5)
+            # Row 7: 经营现金流量净额
+            ocf = row_val(7)
+            # Row 11: 净资产收益率(ROE)
+            roe = row_val(11)
+            # Row 13: 毛利率
+            gross_margin = row_val(13)
+            # Row 54: 营业总收入增长率（百分比）
+            revenue_growth_rate = row_val(54)
+            # Row 55: 归属母公司净利润增长率（百分比）
+            profit_growth_rate = row_val(55)
+
+            # 如果增长率字段直接可用，优先使用；否则用 YoY 计算
+            if revenue_growth_rate is not None and revenue_growth_rate != 0:
+                revenue_growth = revenue_growth_rate / 100.0  # 百分比转小数
+            else:
+                rev_yoy = row_yoy(1)  # 营业总收入 YoY
+                revenue_growth = rev_yoy if rev_yoy is not None else 0
+
+            if profit_growth_rate is not None and profit_growth_rate != 0:
+                profit_growth = profit_growth_rate / 100.0
+            else:
+                np_yoy = row_yoy(0)  # 归母净利润 YoY
+                profit_growth = np_yoy if np_yoy is not None else 0
+
+            # 应计比率 = (净利润 - 经营现金流) / 净资产
+            if net_income and ocf and net_assets and net_assets > 0:
+                accrual = (net_income - ocf) / net_assets
+            else:
+                accrual = 0
+
+            # 安全转小数：百分比 / 100
+            roe_val = roe / 100.0 if roe is not None else 0
+            gm_val = gross_margin / 100.0 if gross_margin is not None else 0
+
+            return {
+                'roe': roe_val,
+                'gross_margin': gm_val,
+                'profit_growth': profit_growth,
+                'revenue_growth': revenue_growth,
+                'accrual_ratio': accrual if accrual is not None else 0,
+                'net_assets': net_assets if net_assets is not None else 0,
+                'revenue': revenue if revenue is not None else 0,
+                'net_profit': net_profit if net_profit is not None else 0,
+                'ocf': ocf if ocf is not None else 0,
+            }
+
+        except Exception as e:
+            print(f"  [财务数据] {symbol} 获取失败: {e}")
+            return self._empty_financial()
+
+    def _empty_financial(self) -> dict:
+        """返回空的财务数据结构"""
+        return {
+            'roe': 0,
+            'gross_margin': 0,
+            'profit_growth': 0,
+            'revenue_growth': 0,
+            'accrual_ratio': 0,
+            'net_assets': 0,
+            'revenue': 0,
+            'net_profit': 0,
+            'ocf': 0,
+        }
+
+    def calculate_growth(self, financial: dict) -> dict:
+        """
+        计算成长指标
+        现在 financial 已经是结构化的 dict，直接返回即可
+        保留此方法以兼容旧调用方式
+        """
+        if isinstance(financial, dict):
+            return {
+                'profit_growth': financial.get('profit_growth', 0),
+                'revenue_growth': financial.get('revenue_growth', 0),
+            }
+        # 兼容旧的 DataFrame 调用
+        return {'profit_growth': 0, 'revenue_growth': 0}
 
     # ============================================================
     # 资金流向
@@ -452,7 +561,7 @@ class DataFetcher:
         # 获取股票信息
         info = self.get_stock_info(symbol)
 
-        # 获取财务数据
+        # 获取财务数据（现在是结构化的 dict）
         financial = self.get_financial_data(symbol)
         growth = self.calculate_growth(financial)
 
@@ -479,12 +588,12 @@ class DataFetcher:
             'pe': pe,
             'pb': pb,
             'pe_percentile_5y': 0.5,
-            'roe': 0.15,
+            'roe': financial.get('roe', 0),
             'ep': 1 / pe if pe > 0 else 0.05,
             'profit_growth': growth['profit_growth'],
             'revenue_growth': growth['revenue_growth'],
-            'gross_margin': 0.30,
-            'accrual_ratio': 0.02,
+            'gross_margin': financial.get('gross_margin', 0),
+            'accrual_ratio': financial.get('accrual_ratio', 0),
             'pledge_ratio': 0.10,
             'return_1d': latest.get('return_1d', 0),
             'return_20d': latest.get('return_20d', 0),
@@ -513,6 +622,7 @@ class DataFetcher:
 
         market_data_by_date = {}
         stock_info_cache = {}
+        stock_financial_cache = {}
 
         # 计算扩展的开始日期（前120天，确保有足够数据计算ma60）
         start_dt = datetime.strptime(start_date, '%Y%m%d')
@@ -536,7 +646,14 @@ class DataFetcher:
                     stock_info_cache[code] = self.get_stock_info(code)
                     time.sleep(0.3)
 
+                # 获取财务数据（缓存）
+                if code not in stock_financial_cache:
+                    stock_financial_cache[code] = self.get_financial_data(code)
+                    time.sleep(0.3)
+
                 info = stock_info_cache[code]
+                financial = stock_financial_cache[code]
+                growth = self.calculate_growth(financial)
                 name = info.get('name', code)
                 industry = info.get('industry', '未知')
 
@@ -592,11 +709,11 @@ class DataFetcher:
                         'pe': info.get('pe', 20),
                         'pb': info.get('pb', 3),
                         'ep': 1 / info.get('pe', 20) if info.get('pe', 20) > 0 else 0.05,
-                        'roe': 0.15,
-                        'profit_growth': 0.10,
-                        'revenue_growth': 0.08,
-                        'gross_margin': 0.30,
-                        'accrual_ratio': 0.02,
+                        'roe': financial.get('roe', 0),
+                        'profit_growth': growth['profit_growth'],
+                        'revenue_growth': growth['revenue_growth'],
+                        'gross_margin': financial.get('gross_margin', 0),
+                        'accrual_ratio': financial.get('accrual_ratio', 0),
                         'pledge_ratio': 0.10,
                         'return_1d': safe_val(row.get('return_1d'), 0),
                         'return_20d': safe_val(row.get('return_20d'), 0),
