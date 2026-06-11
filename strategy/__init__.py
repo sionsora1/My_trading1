@@ -1,6 +1,7 @@
 from .base import BaseStrategy
 from .eight_factor import EightFactorStrategy
 from .position_strategy import PositionStrategy
+from .ai_strategy import AIStrategy
 from .momentum_strategy import (
     MomentumStrategy,
     MeanReversionStrategy,
@@ -17,6 +18,12 @@ STRATEGY_REGISTRY = {
         'name': '8因子选股策略',
         'description': '价值(EP) + 成长(增速) + 反转 + 低换手 + 低波动 + 质量(ROE) + 利润质量',
         'category': 'multi_factor'
+    },
+    'ai_factor': {
+        'class': AIStrategy,
+        'name': 'AI因子挖掘策略',
+        'description': 'LightGBM自动从50+特征中学习非线性因子组合，替代人工定义因子权重',
+        'category': 'ai_ml'
     },
     'position': {
         'class': PositionStrategy,
