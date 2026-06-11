@@ -24,6 +24,10 @@ server.log
 *_operations.csv
 *_result.png
 
+# AI models (trained locally)
+models/
+*.pkl
+
 # Claude
 .claude/
 
