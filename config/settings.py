@@ -111,11 +111,11 @@ LIVE_TRADING_CONFIG = {
     # 风控配置（基于10万初始资金）
     'risk': {
         'max_daily_loss_rate': 0.02,         # 单日最大亏损2%
-        'max_single_position_weight': 0.15,  # 单只最大仓位15% (≈1.5万)
+        'max_single_position_weight': 0.22,  # 单只最大仓位22% (≈2.2万)
         'max_total_positions': 5,            # 最大持仓数5只
-        'max_single_order_amount': 15000,    # 单笔最大金额1.5万
+        'max_single_order_amount': 25000,    # 单笔最大金额2.5万
         'require_confirm_large': True,       # 大额需确认
-        'large_order_threshold': 5000,       # 大额阈值5000
+        'large_order_threshold': 10000,      # 大额阈值1万
     },
 
     # 信号扫描配置

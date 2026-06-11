@@ -557,19 +557,24 @@ class LiveTradingServer:
                         })
                         continue
 
-                    # 动态权重：基于实盘持仓上限计算，确保资金充分利用
-                    # 策略返回的 weight 是回测场景的（如5%），实盘需按上限数量重新算
-                    target_utilization = 0.90  # 总资金利用率90%（留10%缓冲）
+                    # 动态权重：根据剩余可用槽位计算，确保资金充分利用
+                    remaining_slots = max_positions - current_pos_count
+                    target_utilization = 0.95  # 总资金利用率95%
+                    # 按剩余槽位均分 + 当前持仓市值已占用部分
                     dynamic_weight = target_utilization / max(max_positions, 1)
                     # 取策略权重和动态权重中较大的
                     weight = max(signal.weight or 0, dynamic_weight)
                     # 限制不超过风控的单只上限
-                    max_allowed = self.config.get('risk', {}).get('max_single_position_weight', 0.20)
+                    max_allowed = self.config.get('risk', {}).get('max_single_position_weight', 0.22)
                     weight = min(weight, max_allowed)
 
                     target_amount = account.total_assets * weight
-                    # 确保不超过可用资金
-                    target_amount = min(target_amount, account.available_cash * 0.95)
+                    # 用剩余槽位来算合理买入金额（让剩余资金尽量用完）
+                    if remaining_slots > 0:
+                        cash_per_slot = account.available_cash * 0.98 / remaining_slots
+                        target_amount = min(target_amount, cash_per_slot)
+                    else:
+                        target_amount = min(target_amount, account.available_cash * 0.98)
                     quantity = int(target_amount / price / 100) * 100 if price > 0 else 100
                     quantity = max(quantity, 100)
                 elif signal.signal == 'SELL':

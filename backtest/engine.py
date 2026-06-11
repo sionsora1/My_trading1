@@ -173,15 +173,19 @@ class BacktestEngine:
         })
 
     def calculate_buy_quantity(self, price: float, target_weight: float) -> int:
-        """计算买入数量（100股整数倍）"""
+        """计算买入数量（100股整数倍），动态利用剩余资金"""
         portfolio = self.get_portfolio()
-        # 按持仓数动态计算单只权重，确保资金利用率
-        dynamic_weight = 0.90 / max(self.config.max_position_num, 1)
+        # 剩余可用槽位
+        remaining = max(self.config.max_position_num - len(self.positions), 1)
+        # 动态权重：总利用率 / 总槽位数
+        target_utilization = 0.95
+        dynamic_weight = target_utilization / max(self.config.max_position_num, 1)
         weight = max(target_weight, dynamic_weight)
         # 不超过配置的单只仓位上限
         weight = min(weight, self.config.max_single_weight)
         target_amount = portfolio['total_value'] * weight
-        available_amount = min(target_amount, self.cash * 0.95)
+        # 按剩余槽位分配现金，避免前期买太少后期买不起
+        available_amount = min(target_amount, self.cash * 0.98 / remaining)
         quantity = int(available_amount / price / 100) * 100
         return max(quantity, 0)
 
