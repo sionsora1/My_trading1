@@ -6,8 +6,72 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Dict, Optional
-from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+from datetime import datetime, time
+
+
+# ============================================================
+# 交易时段
+# ============================================================
+
+# A股交易时段
+TRADING_SESSIONS = [
+    (time(9, 30), time(11, 30)),   # 上午连续竞价
+    (time(13, 0), time(15, 0)),    # 下午连续竞价
+]
+
+# 盘前集合竞价（可下单不可撤单，保守起见不纳入可交易时段）
+# CALL_AUCTION = (time(9, 15), time(9, 25))
+
+
+def is_trading_time(now: datetime = None) -> Tuple[bool, str]:
+    """
+    判断当前是否为A股连续竞价交易时段
+
+    Args:
+        now: 检查的时间点，None=当前时间
+
+    Returns:
+        (is_trading, reason) — 是否可交易 + 原因说明
+    """
+    if now is None:
+        now = datetime.now()
+
+    # 周末不交易
+    if now.weekday() >= 5:
+        return False, '周末休市'
+
+    t = now.time()
+
+    for start, end in TRADING_SESSIONS:
+        if start <= t <= end:
+            return True, '交易时段'
+
+    # 判断具体处于哪个非交易时段
+    if t < time(9, 30):
+        return False, '盘前未开盘（A股9:30开盘）'
+    elif time(11, 30) < t < time(13, 0):
+        return False, '午间休市（11:30-13:00）'
+    else:
+        return False, '已收盘（A股15:00收盘）'
+
+
+def is_trading_day(date: datetime = None) -> bool:
+    """
+    判断是否为交易日（简化版：仅排除周末）
+
+    注意：完整版需要节假日日历，当前项目未集成。
+    后续可通过 akshare.tool_trade_date_hist_sina() 获取交易日历。
+
+    Args:
+        date: 检查的日期，None=今天
+
+    Returns:
+        bool: 是否为交易日
+    """
+    if date is None:
+        date = datetime.now()
+    return date.weekday() < 5  # 周一到周五
 
 
 class OrderSide(Enum):

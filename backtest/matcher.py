@@ -77,8 +77,10 @@ class MatchEngine:
         }
 
     def match_order(self, order: Order, stock_data: dict, prev_close: float) -> Order:
-        """撮合订单"""
+        """撮合订单（成交价约束在当日最高/最低价范围内）"""
         open_price = stock_data.get('open', stock_data.get('close', 0))
+        day_high = stock_data.get('high', open_price)
+        day_low = stock_data.get('low', open_price)
 
         limit_up = round(prev_close * (1 + self.limit_up_rate), 2)
         limit_down = round(prev_close * (1 + self.limit_down_rate), 2)
@@ -93,9 +95,17 @@ class MatchEngine:
             order.reject_reason = '跌停无法卖出'
             return order
 
+        # ============================================================
+        # 成交价 = 开盘价 + 滑点，约束在当日 [最低价, 最高价] 范围内
+        # 不能低于当天最低价，也不能高于当天最高价
+        # ============================================================
         base_price = open_price
         slippage = self.calculate_slippage(base_price, order.side)
         fill_price = base_price + slippage
+
+        # 约束在当日价格区间内
+        if day_high > 0 and day_low > 0:
+            fill_price = max(day_low, min(day_high, fill_price))
 
         amount = fill_price * order.quantity
         commission = self.calculate_commission(amount, order.side)

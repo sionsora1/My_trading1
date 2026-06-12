@@ -14,7 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from broker import (
     get_broker, BROKER_REGISTRY, SignalNotifier, RiskManager,
-    OrderRequest, OrderResult, OrderSide, OrderType, OrderStatus, Signal, DailyRiskLimit
+    OrderRequest, OrderResult, OrderSide, OrderType, OrderStatus, Signal, DailyRiskLimit,
+    is_trading_time
 )
 from broker.executor import TradeChecklist
 from strategy import get_strategy, STRATEGY_REGISTRY
@@ -154,7 +155,7 @@ class LiveTradingServer:
 
     def submit_order(self, ts_code: str, side: str, quantity: int,
                      price: float = 0, reason: str = '') -> dict:
-        """手动/自动下单"""
+        """手动/自动下单（交易时段自动获取实时价格）"""
         # 获取账户和持仓
         account = self.broker.get_account()
         positions = self.broker.get_positions()
@@ -163,6 +164,16 @@ class LiveTradingServer:
         order_side = OrderSide.BUY if side.upper() == 'BUY' else OrderSide.SELL
         # 获取股票信息（名称等）
         stock_info = self._get_stock_info(ts_code)
+
+        # ============================================================
+        # 获取实时价格（交易时段优先实时价，非交易时段拒绝）
+        # ============================================================
+        rt_price = self._get_realtime_price(ts_code)
+        if rt_price is not None and rt_price > 0:
+            price = rt_price  # 实时价格覆盖
+        elif price <= 0:
+            # 既无实时价格也无传入价格，尝试从 stock_info 获取
+            price = stock_info.get('close', 0)
 
         request = OrderRequest(
             ts_code=ts_code,
@@ -444,6 +455,18 @@ class LiveTradingServer:
         Returns:
             dict: 本次扫描结果
         """
+        # ============================================================
+        # 交易时段校验（非交易时段不扫描）
+        # ============================================================
+        can_trade, reason = is_trading_time()
+        if not can_trade:
+            return {
+                'status': 'skipped',
+                'reason': f'非交易时段（{reason}），跳过扫描',
+                'signals': [],
+                'trades': [],
+            }
+
         if self.risk_manager.state.trading_halted:
             return {
                 'status': 'halted',
@@ -750,23 +773,30 @@ class LiveTradingServer:
                 if cache_time and time.time() - cache_time < 60:
                     return market_data
 
-        # 尝试实时行情
-        try:
-            rt_data = self.fetcher.build_realtime_market_data(stock_pool)
-            if rt_data:
-                # 给每条数据打上缓存时间戳
-                today = datetime.now().strftime('%Y%m%d')
-                if today in rt_data:
-                    for code in rt_data[today]:
-                        rt_data[today][code]['_cached_at'] = time.time()
-                # 缓存实时数据（短时间有效）
-                self.cache.save_market_data(rt_data, cache_filename)
-                print(f"[实盘] 实时行情获取成功，{len(rt_data.get(today, {}))} 只股票")
-                return rt_data
-        except Exception as e:
-            print(f"[实盘] 实时行情获取失败: {e}，回退日线数据")
+        # 尝试实时行情（交易时段可用）
+        can_trade, _ = is_trading_time()
+        if can_trade:
+            try:
+                rt_data = self.fetcher.build_realtime_market_data(stock_pool)
+                if rt_data:
+                    # 给每条数据打上缓存时间戳
+                    today = datetime.now().strftime('%Y%m%d')
+                    if today in rt_data:
+                        for code in rt_data[today]:
+                            rt_data[today][code]['_cached_at'] = time.time()
+                    # 缓存实时数据（短时间有效）
+                    self.cache.save_market_data(rt_data, cache_filename)
+                    print(f"[实盘] 实时行情获取成功，{len(rt_data.get(today, {}))} 只股票")
+                    return rt_data
+            except Exception as e:
+                print(f"[实盘] 实时行情获取失败: {e}")
 
-        # 回退：日线数据
+        # 非交易时段：使用缓存的最新数据（避免用昨日收盘价冒充实时价）
+        market_data = self.cache.load_market_data(cache_filename)
+        if market_data and isinstance(market_data, dict) and len(market_data) > 0:
+            return market_data
+
+        # 无缓存时回退：日线数据（仅作为最后手段）
         market_data = self.fetcher.build_market_data_by_date(stock_pool, start_date, end_date)
         if market_data and len(market_data) > 0:
             self.cache.save_market_data(market_data, cache_filename)
@@ -779,6 +809,25 @@ class LiveTradingServer:
             return info
         except Exception:
             return {'name': ts_code, 'close': 0, 'industry': '未知'}
+
+    def _get_realtime_price(self, ts_code: str) -> float:
+        """
+        获取单只股票的实时最新价
+
+        使用东方财富推送API（免费、无需认证），
+        交易时段返回实时价，非交易时段返回 None。
+
+        Args:
+            ts_code: 股票代码（如 '600519'）
+
+        Returns:
+            float: 实时最新价，获取失败或非交易时段返回 None
+        """
+        code = str(ts_code).split('.')[0]
+        quotes = self.fetcher.get_realtime_quotes([code])
+        if not quotes or code not in quotes:
+            return None
+        return quotes[code].get('close', 0) or None
 
     def update_market_prices(self):
         """更新持仓市值（根据最新行情）"""

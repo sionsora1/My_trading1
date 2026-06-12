@@ -1359,7 +1359,18 @@
             }
 
             const metrics = strategyData.metrics;
-            const label = currentStrategy === 'eight_factor' ? '8因子选股策略' : '位置判断策略';
+            const strategyNames = {
+                'eight_factor': '8因子选股策略',
+                'ai_factor': 'AI因子挖掘策略',
+                'position': '位置判断策略',
+                'momentum': '动量策略',
+                'mean_reversion': '均值回归策略',
+                'value': '价值策略',
+                'quality': '质量策略',
+                'low_volatility': '低波动策略',
+                'trend_following': '趋势跟随策略'
+            };
+            const label = strategyNames[currentStrategy] || currentStrategy;
 
             container.innerHTML = `
                 <div class="col-12 mb-2">

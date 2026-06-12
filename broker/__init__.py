@@ -5,6 +5,7 @@
 
 from .base import BaseBroker, OrderSide, OrderType, OrderStatus
 from .base import OrderRequest, OrderResult, AccountInfo, PositionInfo, Signal, DailyRiskLimit
+from .base import is_trading_time, is_trading_day
 from .sim_broker import SimBroker
 from .qmt_broker import QMTBroker
 from .ths_broker import THSBroker

@@ -15,7 +15,8 @@ from dataclasses import asdict
 
 from .base import (
     BaseBroker, OrderRequest, OrderResult, OrderSide,
-    OrderType, OrderStatus, AccountInfo, PositionInfo
+    OrderType, OrderStatus, AccountInfo, PositionInfo,
+    is_trading_time
 )
 
 
@@ -119,8 +120,27 @@ class SimBroker(BaseBroker):
     # ============================================================
 
     def submit_order(self, request: OrderRequest) -> OrderResult:
-        """提交订单"""
+        """提交订单（含交易时段校验）"""
         order_id = self._gen_order_id()
+
+        # ============================================================
+        # 交易时段校验
+        # ============================================================
+        can_trade, reason = is_trading_time()
+        if not can_trade:
+            result = OrderResult(
+                order_id=order_id,
+                ts_code=request.ts_code,
+                side=request.side,
+                price=request.price,
+                quantity=request.quantity,
+                status=OrderStatus.REJECTED,
+                create_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                error_message=f'非交易时段（{reason}），模拟盘拒绝下单',
+                reason=request.reason,
+            )
+            self._orders.append(result)
+            return result
 
         # 价格：市价单用传入价格（应为当前行情价）
         price = request.price if request.price > 0 else 0
