@@ -11,6 +11,7 @@ class BaseStrategy(ABC):
 
     def __init__(self, config: dict = None):
         self.config = config or {}
+        self.name = self.__class__.__name__
 
     @abstractmethod
     def generate_signals(self, date: str, market_data: dict, portfolio: dict) -> List[dict]:

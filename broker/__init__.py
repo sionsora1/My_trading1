@@ -6,6 +6,7 @@
 from .base import BaseBroker, OrderSide, OrderType, OrderStatus
 from .base import OrderRequest, OrderResult, AccountInfo, PositionInfo, Signal, DailyRiskLimit
 from .base import is_trading_time, is_trading_day
+from .manual_broker import ManualBroker
 from .sim_broker import SimBroker
 from .qmt_broker import QMTBroker
 from .ths_broker import THSBroker
@@ -14,6 +15,13 @@ from .risk_manager import RiskManager
 
 # 券商注册表
 BROKER_REGISTRY = {
+    'manual': {
+        'class': ManualBroker,
+        'name': '东方财富(手动)',
+        'description': '半自动模式：系统生成信号，用户在东方财富App手动下单后录入成交',
+        'category': 'semi_auto',
+        'features': ['半自动', '东方财富', '实盘'],
+    },
     'sim': {
         'class': SimBroker,
         'name': '模拟盘',

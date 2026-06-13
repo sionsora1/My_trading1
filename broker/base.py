@@ -41,6 +41,10 @@ def is_trading_time(now: datetime = None) -> Tuple[bool, str]:
     if now.weekday() >= 5:
         return False, '周末休市'
 
+    # 先检查是否为交易日（排除节假日）
+    if not is_trading_day(now):
+        return False, '节假日休市'
+
     t = now.time()
 
     for start, end in TRADING_SESSIONS:
@@ -58,10 +62,10 @@ def is_trading_time(now: datetime = None) -> Tuple[bool, str]:
 
 def is_trading_day(date: datetime = None) -> bool:
     """
-    判断是否为交易日（简化版：仅排除周末）
+    判断是否为A股交易日（查询数据库日历，含节假日）
 
-    注意：完整版需要节假日日历，当前项目未集成。
-    后续可通过 akshare.tool_trade_date_hist_sina() 获取交易日历。
+    优先从数据库 trade_calendar 表查询；数据库不可用时
+    回退到简单工作日判断（排除周末）。
 
     Args:
         date: 检查的日期，None=今天
@@ -71,7 +75,24 @@ def is_trading_day(date: datetime = None) -> bool:
     """
     if date is None:
         date = datetime.now()
-    return date.weekday() < 5  # 周一到周五
+
+    # 周末永远不是交易日
+    if date.weekday() >= 5:
+        return False
+
+    # 尝试数据库查询（含中国节假日）
+    try:
+        from data.database import SQLiteManager
+        db = SQLiteManager()
+        date_str = date.strftime('%Y%m%d')
+        result = db.is_trade_day(date_str)
+        db.close()
+        return result
+    except Exception:
+        pass
+
+    # 回退：周一到周五（忽略节假日，最坏情况在节假日发出请求但不会成交）
+    return True
 
 
 class OrderSide(Enum):

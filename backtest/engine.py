@@ -33,7 +33,53 @@ class BacktestConfig:
 
     @classmethod
     def from_dict(cls, d: dict) -> 'BacktestConfig':
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+        """从字典创建配置并进行验证"""
+        filtered = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
+        config = cls(**filtered)
+
+        # ── 验证 ──
+        errors = []
+
+        if config.initial_capital <= 0:
+            errors.append(f'initial_capital 必须 > 0，当前值: {config.initial_capital}')
+
+        if not (0 <= config.commission_rate < 0.01):
+            errors.append(f'commission_rate 应在 0~1% 之间，当前值: {config.commission_rate}')
+
+        if not (0 <= config.slippage_rate < 0.05):
+            errors.append(f'slippage_rate 应在 0~5% 之间，当前值: {config.slippage_rate}')
+
+        if config.max_position_num <= 0:
+            errors.append(f'max_position_num 必须 > 0，当前值: {config.max_position_num}')
+
+        if not (0 < config.max_single_weight <= 1.0):
+            errors.append(f'max_single_weight 应在 0~1 之间，当前值: {config.max_single_weight}')
+
+        if config.stop_loss_rate >= 0:
+            errors.append(f'stop_loss_rate 应为负数（止损），当前值: {config.stop_loss_rate}')
+        elif config.stop_loss_rate < -0.50:
+            errors.append(f'stop_loss_rate 不应 <-50%，当前值: {config.stop_loss_rate}')
+
+        if config.move_stop_rate >= 0:
+            errors.append(f'move_stop_rate 应为负数（移动止盈），当前值: {config.move_stop_rate}')
+
+        # 逻辑一致性：止损和移动止盈都应为负数
+        if config.stop_loss_rate >= config.move_stop_rate:
+            # 这可能是配置错误（通常止损(-0.08)应比移动止盈(-0.10)在数值上更大）
+            # 但不同策略有不同约定，仅警告不阻止
+            import warnings
+            warnings.warn(
+                f'stop_loss_rate({config.stop_loss_rate}) >= move_stop_rate({config.move_stop_rate})，'
+                f'请确认这是您期望的配置'
+            )
+
+        if not (0 < config.limit_up_rate <= 0.30):
+            errors.append(f'limit_up_rate 应在 0~30% 之间，当前值: {config.limit_up_rate}')
+
+        if errors:
+            raise ValueError('BacktestConfig 验证失败:\n  - ' + '\n  - '.join(errors))
+
+        return config
 
 
 @dataclass
@@ -81,11 +127,13 @@ class DailyOperation:
 class BacktestEngine:
     """回测引擎"""
 
-    def __init__(self, config):
+    def __init__(self, config, db=None):
         if isinstance(config, dict):
             self.config = BacktestConfig.from_dict(config)
         else:
             self.config = config
+
+        self.db = db  # optional SQLiteManager for DB-backed market data
 
         self.match_engine = MatchEngine({
             'commission_rate': self.config.commission_rate,
@@ -484,6 +532,202 @@ class BacktestEngine:
 
         print(f"{'='*70}")
 
+    def build_market_data_from_db(self, stock_codes: list,
+                                  start_date: str,
+                                  end_date: str) -> dict:
+        """Build market_data_by_date dict from SQLite (fallback path).
+
+        Reads daily_bars, stock_info, and fundamentals from the SQLite
+        database and constructs the same {date: {ts_code: stock_data}}
+        structure that DataFetcher.build_market_data_by_date produces.
+
+        If the database has insufficient data (fewer than 5 trading days
+        or fewer than 2 stocks covered), returns an empty dict so the
+        caller can fall back to the DataFetcher path.
+
+        Args:
+            stock_codes: List of stock codes (e.g. ['600519', '000001']).
+            start_date:  Backtest start date (YYYYMMDD).
+            end_date:    Backtest end date (YYYYMMDD).
+
+        Returns:
+            {date: {ts_code: stock_data}} dict, or empty dict if DB data
+            is insufficient.
+        """
+        if self.db is None:
+            return {}
+
+        # Extend start date for indicator warm-up (same as DataFetcher)
+        from datetime import datetime, timedelta
+        start_dt = datetime.strptime(start_date, '%Y%m%d')
+        extended_start = (start_dt - timedelta(days=180)).strftime('%Y%m%d')
+
+        market_data_by_date: dict = {}
+        stocks_covered = 0
+        total_trade_dates: set = set()
+
+        for code in stock_codes:
+            ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+
+            try:
+                # Read daily bars from SQLite
+                rows = self.db.get_daily_bars(ts_code, extended_start, end_date)
+                if not rows:
+                    continue
+
+                # Build DataFrame
+                df = pd.DataFrame(rows)
+                if df.empty:
+                    continue
+
+                # Ensure numeric types
+                for col in ['open', 'high', 'low', 'close', 'volume',
+                           'turnover', 'pct_chg']:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+                df['trade_date'] = pd.to_datetime(df['trade_date'])
+                df = df.sort_values('trade_date').reset_index(drop=True)
+
+                # ---- Compute basic indicators ----
+                close = df['close']
+                volume = df['volume'] if 'volume' in df.columns else df['close'] * 100
+
+                # Moving averages
+                df['ma5'] = close.rolling(5, min_periods=1).mean()
+                df['ma10'] = close.rolling(10, min_periods=1).mean()
+                df['ma20'] = close.rolling(20, min_periods=1).mean()
+                df['ma60'] = close.rolling(60, min_periods=1).mean()
+
+                # Volume MA
+                df['volume_ma20'] = volume.rolling(20, min_periods=1).mean()
+
+                # Returns
+                df['return_1d'] = close.pct_change(1)
+                df['return_5d'] = close.pct_change(5)
+                df['return_20d'] = close.pct_change(20)
+                df['return_60d'] = close.pct_change(60)
+
+                # Volatility (20-day rolling std of daily returns)
+                ret = close.pct_change()
+                vol_window = min(20, len(df))
+                df['volatility_20d'] = (
+                    ret.rolling(vol_window, min_periods=min(5, vol_window)).std()
+                )
+
+                # Price percentile (1-year rolling)
+                pct_window = min(250, len(df))
+                df['price_percentile_1y'] = (
+                    close.rolling(pct_window, min_periods=min(5, pct_window))
+                    .apply(lambda x: (x < x.iloc[-1]).sum() / len(x)
+                           if len(x) >= 3 else 0.5, raw=False)
+                    .fillna(0.5)
+                )
+
+                # Rolling 1-year high/low
+                df['rolling_high_1y'] = df['high'].rolling(
+                    min(250, len(df)), min_periods=1).max()
+                df['rolling_low_1y'] = df['low'].rolling(
+                    min(250, len(df)), min_periods=1).min()
+
+                # Read stock info from DB (one-off per stock)
+                stock_info = self.db.get_stock_info(ts_code) or {}
+                pe = stock_info.get('pe', 20) or 20
+                pb = stock_info.get('pb', 3) or 3
+                market_cap = stock_info.get('market_cap', 1e10) or 1e10
+                name = stock_info.get('name', code)
+                industry = stock_info.get('industry', '未知')
+
+                # Filter to backtest date range only
+                df_bt = df[df['trade_date'] >= pd.to_datetime(start_date)]
+
+                def safe_v(val, default):
+                    if pd.isna(val):
+                        return default
+                    return val
+
+                for _, row in df_bt.iterrows():
+                    date = row['trade_date'].strftime('%Y%m%d')
+                    total_trade_dates.add(date)
+
+                    if date not in market_data_by_date:
+                        market_data_by_date[date] = {}
+
+                    close_v = safe_v(row.get('close'), 0)
+                    volume_v = safe_v(row.get('volume'), 0)
+
+                    # Get financial data for this specific date (no look-ahead)
+                    fin = self.db.get_financial_for_date(ts_code, date) or {}
+                    roe = fin.get('roe', 0) or 0
+                    ep = 1 / pe if pe > 0 else 0.05
+
+                    market_data_by_date[date][code] = {
+                        'ts_code': code,
+                        'code': code,
+                        'close': close_v,
+                        'open': safe_v(row.get('open'), close_v),
+                        'high': safe_v(row.get('high'), close_v),
+                        'low': safe_v(row.get('low'), close_v),
+                        'volume': volume_v,
+                        'prev_close': safe_v(
+                            close_v / (1 + safe_v(row.get('pct_chg'), 0) / 100)
+                            if safe_v(row.get('pct_chg'), 0) != -100
+                            else close_v,
+                            close_v
+                        ),
+                        'trade_date': date,
+                        'ma5': safe_v(row.get('ma5'), close_v),
+                        'ma10': safe_v(row.get('ma10'), close_v),
+                        'ma20': safe_v(row.get('ma20'), close_v),
+                        'ma60': safe_v(row.get('ma60'), close_v),
+                        'high_1y': safe_v(row.get('rolling_high_1y'), close_v),
+                        'low_1y': safe_v(row.get('rolling_low_1y'), close_v),
+                        'price_percentile_1y': safe_v(row.get('price_percentile_1y'), 0.5),
+                        'pe_percentile_5y': 0.5,
+                        'volume_ma20': safe_v(row.get('volume_ma20'), volume_v),
+                        'turnover': safe_v(row.get('turnover'), 3),
+                        'pe': pe,
+                        'pb': pb,
+                        'ep': ep,
+                        'roe': roe,
+                        'profit_growth': fin.get('profit_growth', 0) or 0,
+                        'revenue_growth': fin.get('revenue_growth', 0) or 0,
+                        'gross_margin': fin.get('gross_margin', 0) or 0,
+                        'accrual_ratio': fin.get('accrual_ratio', 0) or 0,
+                        'pledge_ratio': 0.10,
+                        'return_1d': safe_v(row.get('return_1d'), 0),
+                        'return_5d': safe_v(row.get('return_5d'), 0),
+                        'return_20d': safe_v(row.get('return_20d'), 0),
+                        'return_60d': safe_v(row.get('return_60d'), 0),
+                        'volatility': safe_v(row.get('volatility_20d'), 0.25),
+                        'market_cap': market_cap,
+                        'policy_benefit': False,
+                        'analyst_upgrade': False,
+                        'insider_buying': False,
+                        'buyback': False,
+                        'st_flag': False,
+                        'main_force_net_3d': 0,
+                        'northbound_net_3d': 0,
+                        'industry': industry,
+                        'name': name,
+                    }
+
+                stocks_covered += 1
+
+            except Exception as e:
+                print(f"  [DB fallback] {code}: failed - {e}")
+                continue
+
+        # ---- Sufficiency check ----
+        if stocks_covered < 2 or len(total_trade_dates) < 5:
+            print(f"  [DB fallback] Insufficient data: {stocks_covered} stocks, "
+                  f"{len(total_trade_dates)} trade dates (need >=2 and >=5)")
+            return {}
+
+        print(f"  [DB fallback] Built market data from SQLite: "
+              f"{stocks_covered} stocks, {len(total_trade_dates)} trade dates")
+        return market_data_by_date
+
     def run(self, market_data_by_date: dict, strategy, print_report: bool = True) -> dict:
         """
         运行回测
@@ -584,11 +828,26 @@ class BacktestEngine:
             self.daily_nav, self.trade_records, self.config.initial_capital
         )
 
+        # 基准对比（沪深300 + 中证500）
+        bm_csi300 = PerformanceAnalyzer.calculate_benchmark_metrics(
+            self.daily_nav, '000300'
+        )
+        bm_csi500 = PerformanceAnalyzer.calculate_benchmark_metrics(
+            self.daily_nav, '000905'
+        )
+        metrics['benchmark'] = bm_csi300 if bm_csi300 else bm_csi500
+
+        # 构建基准净值序列（用于绘图）
+        benchmark_nav = PerformanceAnalyzer._build_benchmark_nav(
+            self.daily_nav, '000300'
+        )
+
         PerformanceAnalyzer.print_report(metrics)
 
         return {
             'metrics': metrics,
             'daily_nav': self.daily_nav,
+            'benchmark_nav': benchmark_nav,
             'trade_records': self.trade_records,
             'daily_operations': self.daily_operations,
             'final_portfolio': self.get_portfolio()

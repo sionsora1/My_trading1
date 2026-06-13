@@ -8,8 +8,13 @@ from .momentum_strategy import (
     ValueStrategy,
     QualityStrategy,
     LowVolatilityStrategy,
-    TrendFollowingStrategy
+    TrendFollowingStrategy as SimpleTrendFollowingStrategy  # still in momentum_strategy
 )
+from .trend_following import EnhancedTrendFollowingStrategy
+from .mean_reversion import EnhancedMeanReversionStrategy
+from .intraday_reversal import IntradayReversalStrategy
+from .low_volatility import EnhancedLowVolatilityStrategy
+from .sector_rotation import SectorRotationStrategy
 
 # 策略注册表
 STRATEGY_REGISTRY = {
@@ -38,9 +43,9 @@ STRATEGY_REGISTRY = {
         'category': 'trend'
     },
     'mean_reversion': {
-        'class': MeanReversionStrategy,
+        'class': EnhancedMeanReversionStrategy,
         'name': '均值回归策略',
-        'description': '买入近期跌幅大的股票，超跌反弹',
+        'description': '买入近期跌幅大的股票，超跌反弹（增强版：多因子超卖评分+下降趋势过滤）',
         'category': 'contrarian'
     },
     'value': {
@@ -56,16 +61,28 @@ STRATEGY_REGISTRY = {
         'category': 'fundamental'
     },
     'low_volatility': {
-        'class': LowVolatilityStrategy,
-        'name': '低波动策略',
-        'description': '买入波动率低的股票，低波动异象',
-        'category': 'risk'
+        'class': EnhancedLowVolatilityStrategy,
+        'name': '低波动防御策略（增强）',
+        'description': '低波动+高质量+低估值，熊市/高波动环境防守型策略',
+        'category': 'defensive'
+    },
+    'sector_rotation': {
+        'class': SectorRotationStrategy,
+        'name': '板块轮动策略',
+        'description': '跟踪行业资金流向，在强势行业中选龙头，适合结构性行情',
+        'category': 'sector'
     },
     'trend_following': {
-        'class': TrendFollowingStrategy,
+        'class': EnhancedTrendFollowingStrategy,
         'name': '趋势跟随策略',
-        'description': '买入站上均线的股票，趋势跟踪',
+        'description': '买入站上均线的股票，趋势跟踪（增强版：多因子趋势评分0-1）',
         'category': 'trend'
+    },
+    'intraday_reversal': {
+        'class': IntradayReversalStrategy,
+        'name': '盘中反转策略',
+        'description': '基于5分钟K线检测V型底和A型顶，捕捉盘中反转机会',
+        'category': 'intraday'
     }
 }
 

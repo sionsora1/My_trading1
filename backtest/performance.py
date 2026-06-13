@@ -94,6 +94,139 @@ class PerformanceAnalyzer:
         }
 
     @staticmethod
+    def _build_benchmark_nav(daily_nav: list, benchmark_code: str = '000300') -> list:
+        """构建基准净值序列，用于图表叠加"""
+        try:
+            from data.database import SQLiteManager
+            db = SQLiteManager()
+            ts_code = f'{benchmark_code}.SH'
+            start = daily_nav[0]['date']
+            end = daily_nav[-1]['date']
+            bars = db.get_daily_bars(ts_code, start, end)
+            db.close()
+            if not bars:
+                return []
+            return [{'date': b['trade_date'], 'value': b['close']} for b in bars]
+        except Exception:
+            return []
+
+    @staticmethod
+    def calculate_benchmark_metrics(daily_nav: list, benchmark_code: str = '000300') -> dict:
+        """
+        计算基准对比指标：Alpha, Beta, 信息比率, 超额收益, 超额回撤
+
+        Args:
+            daily_nav: 策略每日净值列表
+            benchmark_code: 基准代码 ('000300' CSI300, '000905' CSI500)
+
+        Returns:
+            dict with benchmark metrics
+        """
+        try:
+            from data.database import SQLiteManager
+            db = SQLiteManager()
+            ts_code = f'{benchmark_code}.SH'
+            start = daily_nav[0]['date']
+            end = daily_nav[-1]['date']
+            bars = db.get_daily_bars(ts_code, start, end)
+            db.close()
+
+            if not bars:
+                return {}
+
+            # Build benchmark NAV aligned with strategy dates
+            bm_prices = {b['trade_date']: b['close'] for b in bars}
+            bm_nav = []
+            for nav in daily_nav:
+                date = nav['date']
+                if date in bm_prices and bm_prices[date] > 0:
+                    bm_nav.append(bm_prices[date])
+
+            if len(bm_nav) < 10:
+                return {}
+
+            bm_nav0 = bm_nav[0]
+            bm_returns = [(bm_nav[i] - bm_nav[i-1]) / bm_nav[i-1]
+                          for i in range(1, len(bm_nav))]
+
+            strategy_values = [nav['total_value'] for nav in daily_nav
+                               if nav['date'] in bm_prices]
+            if len(strategy_values) < 2:
+                return {}
+            st_returns = [(strategy_values[i] - strategy_values[i-1]) / strategy_values[i-1]
+                          for i in range(1, len(strategy_values))]
+
+            # Align lengths
+            min_len = min(len(st_returns), len(bm_returns))
+            st_returns = st_returns[-min_len:]
+            bm_returns = bm_returns[-min_len:]
+
+            import numpy as np
+            st_arr = np.array(st_returns)
+            bm_arr = np.array(bm_returns)
+
+            # Beta: covariance / variance
+            cov = np.cov(st_arr, bm_arr)[0][1]
+            var = np.var(bm_arr)
+            beta = cov / var if var > 0 else 1.0
+
+            # Alpha: annualized excess return over risk-free rate
+            risk_free_daily = 0.03 / 252
+            excess_daily = st_arr - risk_free_daily - beta * (bm_arr - risk_free_daily)
+            alpha = excess_daily.mean() * 252  # annualized
+
+            # Information Ratio
+            tracking_error = (st_arr - bm_arr).std() * np.sqrt(252)
+            excess_return = (st_arr.mean() - bm_arr.mean()) * 252
+            information_ratio = excess_return / tracking_error if tracking_error > 0 else 0
+
+            # Benchmark metrics
+            bm_total_return = (bm_nav[-1] - bm_nav0) / bm_nav0
+            bm_peak = bm_nav[0]
+            bm_max_dd = 0
+            for p in bm_nav:
+                if p > bm_peak:
+                    bm_peak = p
+                dd = (p - bm_peak) / bm_peak
+                if dd < bm_max_dd:
+                    bm_max_dd = dd
+
+            # Excess max drawdown (strategy DD beyond benchmark DD)
+            # Build aligned NAV series
+            st_nav = [1.0]
+            for r in st_returns:
+                st_nav.append(st_nav[-1] * (1 + r))
+            bm_nav_norm = [1.0]
+            for r in bm_returns:
+                bm_nav_norm.append(bm_nav_norm[-1] * (1 + r))
+
+            excess_nav = [s / b for s, b in zip(st_nav, bm_nav_norm)]
+            ex_peak = 1.0
+            excess_max_dd = 0
+            for v in excess_nav:
+                if v > ex_peak:
+                    ex_peak = v
+                dd = (v - ex_peak) / ex_peak
+                if dd < excess_max_dd:
+                    excess_max_dd = dd
+
+            return {
+                'benchmark_code': benchmark_code,
+                'benchmark_name': '沪深300' if benchmark_code == '000300' else '中证500',
+                'benchmark_return': bm_total_return,
+                'benchmark_max_drawdown': bm_max_dd,
+                'alpha': alpha,
+                'beta': beta,
+                'information_ratio': information_ratio,
+                'excess_return': excess_return,
+                'excess_max_drawdown': excess_max_dd,
+                'tracking_error': tracking_error,
+                'is_outperforming': bm_total_return < (st_nav[-1] - 1) if st_nav else False,
+            }
+        except Exception as e:
+            return {'error': str(e)}
+
+    @staticmethod
     def print_report(metrics: dict):
         """打印回测报告"""
         print("\n" + "=" * 60)
@@ -128,11 +261,29 @@ class PerformanceAnalyzer:
         print(f"  总滑点：{metrics.get('total_slippage', 0):.2f}")
         print(f"  成本占比：{metrics.get('cost_ratio', 0):.2%}")
 
+        # Benchmark section
+        bm = metrics.get('benchmark', {})
+        if bm:
+            print(f"\n【基准对比 ({bm.get('benchmark_name', '')})】")
+            bm_ret = bm.get('benchmark_return', 0)
+            strategy_ret = metrics.get('total_return', 0)
+            print(f"  策略收益：{strategy_ret:.2%}")
+            print(f"  基准收益：{bm_ret:.2%}")
+            excess = strategy_ret - bm_ret
+            tag = '[OUTPERFORM]' if excess > 0 else '[UNDERPERFORM]'
+            print(f"  超额收益：{excess:.2%} {tag}")
+            print(f"  Alpha(年化)：{bm.get('alpha', 0):.2%}")
+            print(f"  Beta：{bm.get('beta', 0):.2f}")
+            print(f"  信息比率：{bm.get('information_ratio', 0):.2f}")
+            print(f"  超额最大回撤：{bm.get('excess_max_drawdown', 0):.2%}")
+            print(f"  基准最大回撤：{bm.get('benchmark_max_drawdown', 0):.2%}")
+
         print("\n" + "=" * 60)
 
     @staticmethod
-    def plot_equity_curve(daily_nav: List[dict], save_path: str = 'backtest_result.png'):
-        """绘制净值曲线"""
+    def plot_equity_curve(daily_nav: List[dict], save_path: str = 'backtest_result.png',
+                          benchmark_nav: List[dict] = None, benchmark_name: str = '沪深300'):
+        """绘制净值曲线（可选叠加基准）"""
         try:
             import matplotlib.pyplot as plt
 
@@ -143,24 +294,43 @@ class PerformanceAnalyzer:
             fig, axes = plt.subplots(2, 1, figsize=(14, 8))
 
             ax1 = axes[0]
-            ax1.plot(df['date'], df['nav'], label='策略净值', linewidth=1.5)
-            ax1.set_title('策略净值曲线')
-            ax1.set_ylabel('净值')
+            ax1.plot(df['date'], df['nav'], label='Strategy NAV', linewidth=1.5, color='#1f77b4')
+
+            # Overlay benchmark if provided
+            if benchmark_nav and len(benchmark_nav) > 0:
+                bm_df = pd.DataFrame(benchmark_nav)
+                bm_df['date'] = pd.to_datetime(bm_df['date'])
+                bm_df['nav'] = bm_df['value'] / bm_df['value'].iloc[0]
+                ax1.plot(bm_df['date'], bm_df['nav'], label=benchmark_name,
+                         linewidth=1.0, linestyle='--', color='#ff7f0e', alpha=0.8)
+
+            ax1.set_title('Strategy vs Benchmark NAV')
+            ax1.set_ylabel('NAV')
             ax1.legend()
             ax1.grid(True, alpha=0.3)
 
+            # Drawdown with benchmark
             ax2 = axes[1]
             df['peak'] = df['nav'].cummax()
             df['drawdown'] = (df['nav'] - df['peak']) / df['peak']
-            ax2.fill_between(df['date'], df['drawdown'], 0, color='red', alpha=0.3)
-            ax2.set_title('回撤曲线')
-            ax2.set_ylabel('回撤')
+            ax2.plot(df['date'], df['drawdown'], label='Strategy DD', linewidth=1.2, color='red')
+
+            if benchmark_nav and len(benchmark_nav) > 0:
+                bm_df['peak'] = bm_df['nav'].cummax()
+                bm_df['dd'] = (bm_df['nav'] - bm_df['peak']) / bm_df['peak']
+                ax2.plot(bm_df['date'], bm_df['dd'], label=f'{benchmark_name} DD',
+                         linewidth=1.0, linestyle='--', color='orange', alpha=0.8)
+
+            ax2.set_title('Drawdown')
+            ax2.set_ylabel('Drawdown')
+            ax2.legend()
             ax2.grid(True, alpha=0.3)
+            ax2.set_ylim(min(df['drawdown'].min() * 1.2, -0.05), 0.02)
 
             plt.tight_layout()
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             plt.show()
-            print(f"图表已保存: {save_path}")
+            print(f"Chart saved: {save_path}")
 
         except ImportError:
             print("需要安装matplotlib: pip install matplotlib")

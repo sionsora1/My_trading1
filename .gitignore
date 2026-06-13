@@ -28,6 +28,21 @@ server.log
 models/
 *.pkl
 
+# Database (large, auto-generated)
+*.db
+*.db-shm
+*.db-wal
+
+# Windows artifacts
+NUL
+
+# Archives
+data_cache/reports/
+
+# ReasonIX
+.reasonix/
+reasonix.toml
+
 # Claude
 .claude/
 

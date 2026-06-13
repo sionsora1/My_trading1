@@ -25,10 +25,52 @@ from strategy import get_strategy, get_all_strategies, STRATEGY_REGISTRY
 from analysis.market_regime import MarketRegimeDetector, StrategyRegimeAdapter, MarketRegime
 from analysis.ai_analyzer import analyze_fed_event, AIAnalyzer
 from data.fetcher import DataFetcher, DataCache
-from config.settings import BACKTEST_CONFIG, LIVE_TRADING_CONFIG
+from config.settings import BACKTEST_CONFIG, LIVE_TRADING_CONFIG, API_KEY, PROTECTED_PATH_PREFIXES
 
 # 获取当前目录
 BASE_DIR = Path(__file__).parent
+
+
+# ============================================================
+# v2.0 Module Initialization
+# ============================================================
+
+from data.database import SQLiteManager
+from data.calendar import TradeCalendar
+from sigbus.bus import SignalBus
+from broker.manual_broker import ManualBroker
+from config.strategy_profiles import SIGNAL_BUS_CONFIG
+from config.settings import LIVE_TRADING_CONFIG, DATA_CACHE_DIR
+
+# Database
+db = SQLiteManager()
+calendar = TradeCalendar(db)
+
+# Sync calendar on first run
+if db.calendar_row_count() == 0:
+    print("[Server] First run — syncing trade calendar...")
+    calendar.sync_to_db()
+
+# Sync market data from cache to SQLite (if DB is empty)
+try:
+    daily_count = db._conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
+    if daily_count == 0:
+        print("[Server] SQLite daily_bars empty — syncing from JSON cache...")
+        sync_counts = db.sync_from_cache()
+        print(f"[Server] Synced: {sync_counts['daily_bars']} daily bars, "
+              f"{sync_counts['stock_info']} stocks from {sync_counts['files']} cache files")
+except Exception as e:
+    print(f"[Server] Data sync skipped: {e}")
+
+# SignalBus
+signal_bus = SignalBus(SIGNAL_BUS_CONFIG)
+
+# ManualBroker (for Eastmoney semi-auto)
+manual_broker = ManualBroker({
+    'initial_capital': LIVE_TRADING_CONFIG.get('sim', {}).get('initial_capital', 100_000),
+    'data_dir': DATA_CACHE_DIR,
+})
+manual_broker.connect()
 
 
 # ============================================================
@@ -49,6 +91,57 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================================
+# API 鉴权中间件
+# ============================================================
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+
+class ApiKeyMiddleware(BaseHTTPMiddleware):
+    """API Key 鉴权中间件 — 保护实盘交易等敏感接口"""
+
+    async def dispatch(self, request, call_next):
+        # 如果未配置 API_KEY，跳过鉴权
+        if not API_KEY:
+            return await call_next(request)
+
+        # 只检查配置的保护路径
+        path = request.url.path
+        needs_auth = any(path.startswith(p) for p in PROTECTED_PATH_PREFIXES)
+
+        if needs_auth:
+            # 同源请求（来自本服务器web页面）直接放行
+            referer = request.headers.get('Referer', '')
+            host = request.headers.get('host', '')
+            if host and host.split(':')[0] in referer:
+                return await call_next(request)
+
+            # 外部请求：需要 API Key
+            # 支持 Authorization: Bearer <key> 或 ?api_key=<key>
+            auth_header = request.headers.get('Authorization', '')
+            token = None
+
+            if auth_header.startswith('Bearer '):
+                token = auth_header[7:]
+            else:
+                token = request.query_params.get('api_key')
+
+            if token != API_KEY:
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        'status': 'error',
+                        'detail': 'Unauthorized: valid API Key required. Use Authorization: Bearer <key> or ?api_key=<key>',
+                    }
+                )
+
+        return await call_next(request)
+
+
+app.add_middleware(ApiKeyMiddleware)
 
 # 全局状态
 tasks = {}  # 存储后台任务
@@ -108,58 +201,6 @@ async def app_page():
         return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
     return HTMLResponse(content="<h1>请先创建 web/app.html 文件</h1>")
 
-@app.get("/vis.html", response_class=HTMLResponse)
-async def vis_page():
-    """返回 Streamlit 可视化入口说明页"""
-    return HTMLResponse(content="""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>可视化回测 - A股量化交易系统</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
-    <style>
-        body { background: #f0f2f5; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-        .container { max-width: 600px; margin: 80px auto; text-align: center; }
-        .card { border: none; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); padding: 40px; }
-        .btn-launch { padding: 14px 40px; font-size: 1.1rem; border-radius: 10px; margin: 8px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="card">
-            <h2 style="font-size:2rem;margin-bottom:8px;">📊 Streamlit 可视化回测</h2>
-            <p class="text-muted mb-4">独立 Streamlit 应用，提供交互式净值曲线、回撤分析和每日操作统计</p>
-            <div id="status-area" class="mb-3">
-                <div class="spinner-border spinner-border-sm text-secondary"></div>
-                <span class="ms-2 text-muted">检测 Streamlit 服务状态...</span>
-            </div>
-            <a href="http://localhost:8501" class="btn btn-primary btn-launch" id="btn-streamlit" target="_blank">
-                <i class="bi bi-box-arrow-up-right"></i> 打开 Streamlit 界面
-            </a>
-            <br>
-            <a href="/index.html" class="btn btn-outline-secondary btn-launch">
-                <i class="bi bi-house-door"></i> 返回主页
-            </a>
-            <p class="text-muted mt-4" style="font-size:0.85rem;">
-                如果上面按钮不能打开，请在终端运行：<br>
-                <code>streamlit run app.py --server.port 8501</code>
-            </p>
-        </div>
-    </div>
-    <script>
-        fetch('http://localhost:8501/healthz', {mode:'no-cors'})
-            .then(() => {
-                document.getElementById('status-area').innerHTML = '<span style="color:#059669;">✅ Streamlit 服务运行中</span>';
-            })
-            .catch(() => {
-                document.getElementById('status-area').innerHTML = '<span style="color:#ef4444;">❌ Streamlit 服务未启动</span>';
-            });
-    </script>
-</body>
-</html>""")
-
 @app.get("/live.html", response_class=HTMLResponse)
 async def live_page():
     """返回实盘交易页面"""
@@ -175,6 +216,14 @@ async def mobile_page():
     if html_file.exists():
         return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
     return HTMLResponse(content="<h1>请先创建 web/mobile.html 文件</h1>")
+
+@app.get("/kline_vis.html", response_class=HTMLResponse)
+async def kline_vis_page():
+    """返回K线策略可视化页面"""
+    html_file = BASE_DIR / "web" / "kline_vis.html"
+    if html_file.exists():
+        return HTMLResponse(content=html_file.read_text(encoding='utf-8'))
+    return HTMLResponse(content="<h1>请先创建 web/kline_vis.html 文件</h1>")
 
 @app.get("/api")
 async def api_info():
@@ -283,15 +332,6 @@ async def analyze_event(request: EventAnalysisRequest):
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
-
-@app.get("/api/strategies")
-async def get_strategies():
-    """获取所有可用策略"""
-    return {
-        "status": "success",
-        "data": get_all_strategies()
-    }
 
 
 @app.get("/api/stocks")
@@ -873,6 +913,9 @@ def get_live_server():
         if persisted_pool:
             config['scan']['stock_pool'] = [s['code'] for s in persisted_pool]
         _live_server = LiveTradingServer(config)
+        # Attach v2.0 global modules so web/api.py can access them
+        _live_server.signal_bus = signal_bus
+        _live_server.manual_broker = manual_broker
     return _live_server
 
 
@@ -1033,6 +1076,9 @@ async def live_start(background_tasks: BackgroundTasks,
                 config['scan']['stock_pool'] = [s['code'] for s in persisted_pool]
 
         _live_server = LiveTradingServer(config)
+        # Attach v2.0 global modules so web/api.py can access them
+        _live_server.signal_bus = signal_bus
+        _live_server.manual_broker = manual_broker
     else:
         server = get_live_server()
         persisted_pool = _load_stock_pool()
@@ -1401,6 +1447,16 @@ async def mark_checklist_skipped(item_id: str):
     return {"status": "error", "message": f"找不到 {item_id}"}
 
 # ============================================================
+# v2.0 Web API Router
+# ============================================================
+
+from web.api import router as web_api_router
+app.include_router(web_api_router)
+
+from web.kline_api import router as kline_api_router
+app.include_router(kline_api_router)
+
+# ============================================================
 # 启动服务
 # ============================================================
 
@@ -1426,7 +1482,7 @@ if __name__ == "__main__":
     print("    回测分析:   http://localhost:8000/app.html")
     print("    实盘交易:   http://localhost:8000/live.html")
     print("    手机看信号: http://localhost:8000/mobile.html")
-    print("    可视化回测: http://localhost:8501")
+    print("    K线策略可视化: http://localhost:8000/kline_vis.html")
     print("    API文档:    http://localhost:8000/docs")
     if lan_ip and lan_ip != '127.0.0.1':
         print()

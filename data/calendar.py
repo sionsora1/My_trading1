@@ -61,29 +61,65 @@ class TradeCalendar:
     def sync_to_db(self):
         """Fetch calendar from AKShare, build pre/next links, and persist.
 
-        Loads all trade dates, sorts them, computes ``pre_trade_date`` and
-        ``next_trade_date`` for each, then writes the batch via
-        ``db.upsert_calendar()``.
+        Generates a complete calendar covering all weekdays between the first
+        and last trading day returned by AKShare.  Days present in the AKShare
+        feed are marked ``is_open=1`` (trading); weekdays absent from the feed
+        are marked ``is_open=0`` (Chinese public holidays).  Weekends are
+        excluded entirely -- they are implicitly non-trading.
 
         If ``self._db`` is None this is a no-op (the data has nowhere to go).
         """
         if self._db is None:
             return
 
-        rows = self.load_from_akshare()
-        if not rows:
+        trade_days = self.load_from_akshare()
+        if not trade_days:
             return
 
-        # Sort by trade_date ascending
-        rows.sort(key=lambda r: r["trade_date"])
+        # Build a set of known trading dates
+        trade_dates_set = {r["trade_date"] for r in trade_days}
 
-        # Build pre / next trade date relationships
-        count = len(rows)
-        for i, row in enumerate(rows):
-            row["pre_trade_date"] = rows[i - 1]["trade_date"] if i > 0 else None
-            row["next_trade_date"] = rows[i + 1]["trade_date"] if i < count - 1 else None
+        # Determine the full date range (first and last trading day)
+        trade_days.sort(key=lambda r: r["trade_date"])
+        first_date = trade_days[0]["trade_date"]
+        last_date = trade_days[-1]["trade_date"]
 
-        self._db.upsert_calendar(rows)
+        # Generate ALL weekdays in the range, marking holidays as is_open=0
+        dt_start = datetime.strptime(first_date, "%Y%m%d")
+        dt_end = datetime.strptime(last_date, "%Y%m%d")
+
+        full_calendar = []
+        trade_only = []  # for pre/next links
+
+        current = dt_start
+        while current <= dt_end:
+            date_str = current.strftime("%Y%m%d")
+            if current.weekday() < 5:  # Mon-Fri only
+                is_open = 1 if date_str in trade_dates_set else 0
+                full_calendar.append({
+                    "trade_date": date_str,
+                    "is_open": is_open,
+                })
+                if is_open:
+                    trade_only.append(date_str)
+            current += timedelta(days=1)
+
+        # Build pre / next TRADING date relationships (skip holidays)
+        count = len(trade_only)
+        for row in full_calendar:
+            if row["is_open"]:
+                idx = trade_only.index(row["trade_date"])
+                row["pre_trade_date"] = trade_only[idx - 1] if idx > 0 else None
+                row["next_trade_date"] = trade_only[idx + 1] if idx < count - 1 else None
+            else:
+                row["pre_trade_date"] = None
+                row["next_trade_date"] = None
+
+        self._db.upsert_calendar(full_calendar)
+
+        holiday_count = sum(1 for r in full_calendar if not r["is_open"])
+        print(f"[Calendar] Synced: {len(trade_only)} trading days, "
+              f"{holiday_count} holidays, {len(full_calendar)} total weekdays")
 
     # ------------------------------------------------------------------
     # Internal helpers

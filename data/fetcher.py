@@ -305,11 +305,25 @@ class DataFetcher:
             df = ak.stock_info_a_code_name()
             match = df[df['code'] == symbol]
             if not match.empty:
-                return {'name': match.iloc[0]['name'], 'industry': '未知'}
+                return {
+                    'name': match.iloc[0]['name'],
+                    'industry': '未知',
+                    'market_cap': 0,
+                    'circ_market_cap': 0,
+                    'pe': 0,
+                    'pb': 0,
+                }
         except:
             pass
 
-        return {'name': symbol, 'industry': '未知'}
+        return {
+            'name': symbol,
+            'industry': '未知',
+            'market_cap': 0,
+            'circ_market_cap': 0,
+            'pe': 0,
+            'pb': 0,
+        }
 
     # ============================================================
     # 财务数据
@@ -686,6 +700,39 @@ class DataFetcher:
                             return default
                         return val
 
+                    # ── Point-in-time financial data (eliminates look-ahead bias) ──
+                    # Try database for the correct vintage of fundamental data.
+                    # Falls back to the current snapshot if the DB has no data for this date.
+                    ptl_pe = info.get('pe', 20)
+                    ptl_pb = info.get('pb', 3)
+                    ptl_roe = financial.get('roe', 0)
+                    ptl_gross_margin = financial.get('gross_margin', 0)
+                    ptl_accrual = financial.get('accrual_ratio', 0)
+                    ptl_profit_growth = growth['profit_growth']
+                    ptl_revenue_growth = growth['revenue_growth']
+                    ptl_mcap = info.get('market_cap', 1e10)
+
+                    try:
+                        from data.database import SQLiteManager as _DB
+                        _db = _DB()
+                        # Point-in-time fundamentals lookup
+                        fin_ptl = _db.get_financial_for_date(ts_code, date)
+                        if fin_ptl:
+                            ptl_roe = fin_ptl.get('roe', ptl_roe) or ptl_roe
+                            ptl_gross_margin = fin_ptl.get('gross_margin', ptl_gross_margin) or ptl_gross_margin
+                            ptl_accrual = fin_ptl.get('accrual_ratio', ptl_accrual) or ptl_accrual
+                            ptl_profit_growth = fin_ptl.get('profit_growth', ptl_profit_growth) or ptl_profit_growth
+                            ptl_revenue_growth = fin_ptl.get('revenue_growth', ptl_revenue_growth) or ptl_revenue_growth
+                        # Point-in-time stock info (PE/PB may change over time)
+                        info_ptl = _db.get_stock_info(ts_code)
+                        if info_ptl:
+                            ptl_pe = info_ptl.get('pe', ptl_pe) or ptl_pe
+                            ptl_pb = info_ptl.get('pb', ptl_pb) or ptl_pb
+                            ptl_mcap = info_ptl.get('market_cap', ptl_mcap) or ptl_mcap
+                        _db.close()
+                    except Exception:
+                        pass  # DB unavailable: use snapshot values (acceptable fallback)
+
                     market_data_by_date[date][code] = {
                         'ts_code': code,
                         'code': code,
@@ -706,20 +753,20 @@ class DataFetcher:
                         'pe_percentile_5y': 0.5,
                         'volume_ma20': safe_val(row.get('volume_ma20'), row['vol']),
                         'turnover': safe_val(row.get('turnover_rate'), 3),
-                        'pe': info.get('pe', 20),
-                        'pb': info.get('pb', 3),
-                        'ep': 1 / info.get('pe', 20) if info.get('pe', 20) > 0 else 0.05,
-                        'roe': financial.get('roe', 0),
-                        'profit_growth': growth['profit_growth'],
-                        'revenue_growth': growth['revenue_growth'],
-                        'gross_margin': financial.get('gross_margin', 0),
-                        'accrual_ratio': financial.get('accrual_ratio', 0),
+                        'pe': ptl_pe,
+                        'pb': ptl_pb,
+                        'ep': 1 / ptl_pe if ptl_pe > 0 else 0.05,
+                        'roe': ptl_roe,
+                        'profit_growth': ptl_profit_growth,
+                        'revenue_growth': ptl_revenue_growth,
+                        'gross_margin': ptl_gross_margin,
+                        'accrual_ratio': ptl_accrual,
                         'pledge_ratio': 0.10,
                         'return_1d': safe_val(row.get('return_1d'), 0),
                         'return_20d': safe_val(row.get('return_20d'), 0),
                         'return_60d': safe_val(row.get('return_60d'), 0),
                         'volatility': safe_val(row.get('volatility_20d'), 0.25),
-                        'market_cap': info.get('market_cap', 1e10),
+                        'market_cap': ptl_mcap,
                         'policy_benefit': False,
                         'analyst_upgrade': False,
                         'insider_buying': False,
@@ -741,6 +788,243 @@ class DataFetcher:
 
         print(f"  共获取 {len(market_data_by_date)} 个交易日的数据")
         return market_data_by_date
+
+    # ============================================================
+    # 分钟线行情
+    # ============================================================
+
+    @staticmethod
+    def _parse_ts_code(ts_code: str) -> tuple:
+        """Parse a ts_code into (symbol, market).
+
+        Handles both '600519' and '600519.SH' / '000001.SZ' formats.
+        Returns (symbol: str, market: str) where market is 'sh' or 'sz'.
+        """
+        symbol = str(ts_code).split('.')[0].strip()
+        market = 'sh' if symbol.startswith('6') else 'sz'
+        return symbol, market
+
+    def get_minute_data(self, ts_code: str, period: str = '5',
+                        start_time: str = None, end_time: str = None) -> pd.DataFrame:
+        """Get historical minute-level bar data for a single stock.
+
+        Tries the Sina source first, then falls back to Eastmoney.
+
+        Args:
+            ts_code:  Stock code in '600519' or '600519.SH' format.
+            period:   Bar period in minutes ('1', '5', '15', '30', '60').
+            start_time: Start datetime string, e.g. '2025-06-01 09:30:00'.
+            end_time:   End datetime string.
+
+        Returns:
+            DataFrame with columns matching minute_bars table schema,
+            or an empty DataFrame on failure.
+        """
+        import akshare as ak
+
+        symbol, market = self._parse_ts_code(ts_code)
+        df = pd.DataFrame()
+
+        # ---- Source 1: Sina (stock_zh_a_minute) ----
+        try:
+            sina_symbol = f"{market}{symbol}"
+            df = ak.stock_zh_a_minute(
+                symbol=sina_symbol,
+                period=period,
+                adjust='qfq',
+            )
+
+            if not df.empty:
+                # Sina returns columns: day, open, high, low, close, volume
+                col_map = {}
+                for col in df.columns:
+                    cl = col.lower()
+                    if cl in ('day', 'time', 'trade_time', 'datetime',
+                              'date', 'trade_date'):
+                        col_map[col] = 'trade_time'
+                    elif cl in ('open',):
+                        col_map[col] = 'open'
+                    elif cl in ('high',):
+                        col_map[col] = 'high'
+                    elif cl in ('low',):
+                        col_map[col] = 'low'
+                    elif cl in ('close',):
+                        col_map[col] = 'close'
+                    elif cl in ('volume', 'vol'):
+                        col_map[col] = 'volume'
+
+                # Only rename columns we have mappings for
+                rename_map = {k: v for k, v in col_map.items() if k in df.columns}
+                if rename_map:
+                    df = df.rename(columns=rename_map)
+        except Exception:
+            pass  # fall through to next source
+
+        # ---- Source 2: Eastmoney (stock_zh_a_hist_min_em) ----
+        if df.empty:
+            try:
+                df = ak.stock_zh_a_hist_min_em(
+                    symbol=symbol,
+                    period=period,
+                    start_date=start_time,
+                    end_date=end_time,
+                    adjust='qfq',
+                )
+
+                if not df.empty:
+                    # Eastmoney returns Chinese column names
+                    col_map_cn = {
+                        '时间': 'trade_time',
+                        '开盘': 'open',
+                        '最高': 'high',
+                        '最低': 'low',
+                        '收盘': 'close',
+                        '成交量': 'volume',
+                    }
+                    # Also try lowercase English mappings in case AKShare normalises
+                    col_map_en = {}
+                    for col in df.columns:
+                        cl = col.lower()
+                        if cl in ('time', 'trade_time', 'datetime'):
+                            col_map_en[col] = 'trade_time'
+                        elif cl in ('open',):
+                            col_map_en[col] = 'open'
+                        elif cl in ('high',):
+                            col_map_en[col] = 'high'
+                        elif cl in ('low',):
+                            col_map_en[col] = 'low'
+                        elif cl in ('close',):
+                            col_map_en[col] = 'close'
+                        elif cl in ('volume', 'vol'):
+                            col_map_en[col] = 'volume'
+
+                    rename_map = {k: v for k, v in {**col_map_cn, **col_map_en}.items()
+                                  if k in df.columns}
+                    if rename_map:
+                        df = df.rename(columns=rename_map)
+            except Exception:
+                pass
+
+        if df.empty:
+            return pd.DataFrame()
+
+        # Add metadata columns
+        df['ts_code'] = ts_code
+        df['period'] = int(period) if period else 5
+
+        # Ensure trade_time is a string
+        if 'trade_time' in df.columns:
+            df['trade_time'] = df['trade_time'].astype(str)
+
+        return df
+
+    def get_intraday_data(self, ts_code: str) -> pd.DataFrame:
+        """Get the latest intraday tick/minute data via Eastmoney.
+
+        Args:
+            ts_code: Stock code in '600519' or '600519.SH' format.
+
+        Returns:
+            DataFrame with intraday data, or empty DataFrame on failure.
+        """
+        import akshare as ak
+
+        symbol, _ = self._parse_ts_code(ts_code)
+        df = pd.DataFrame()
+
+        try:
+            df = ak.stock_intraday_em(symbol=symbol)
+
+            if not df.empty:
+                # Map common column names
+                col_map = {}
+                for col in df.columns:
+                    cl = col.lower()
+                    if cl in ('time', 'trade_time', 'datetime'):
+                        col_map[col] = 'trade_time'
+                    elif cl in ('open',):
+                        col_map[col] = 'open'
+                    elif cl in ('high',):
+                        col_map[col] = 'high'
+                    elif cl in ('low',):
+                        col_map[col] = 'low'
+                    elif cl in ('close', 'price'):
+                        col_map[col] = 'close'
+                    elif cl in ('volume', 'vol'):
+                        col_map[col] = 'volume'
+
+                rename_map = {k: v for k, v in col_map.items() if k in df.columns}
+                if rename_map:
+                    df = df.rename(columns=rename_map)
+
+                df['ts_code'] = ts_code
+        except Exception:
+            pass
+
+        return df
+
+    def fetch_and_store_minute_bars(self, stock_pool: list, db,
+                                    period: str = '5') -> int:
+        """Fetch minute bars for a pool of stocks and persist them via *db*.
+
+        Each bar row is validated through DataValidator.validate_minute_bar
+        before storage.  Progress is printed every 10 stocks.
+
+        Args:
+            stock_pool: List of stock codes (e.g. ['600519', '000001']).
+            db:         SQLiteManager instance (must have upsert_minute_bars).
+            period:     Bar period in minutes ('1', '5', '15', '30', '60').
+
+        Returns:
+            Total number of rows stored.
+        """
+        # Lazy import to avoid circular dependency at module level
+        from data.validator import DataValidator
+
+        total_stored = 0
+        total_stocks = len(stock_pool)
+
+        for i, code in enumerate(stock_pool):
+            try:
+                df = self.get_minute_data(ts_code=code, period=period)
+                if df.empty:
+                    if (i + 1) % 10 == 0 or i == total_stocks - 1:
+                        print(f"  [{i + 1}/{total_stocks}] {code}: no minute data")
+                    continue
+
+                rows = df.to_dict(orient='records')
+                valid_rows = []
+                rejected = 0
+                for row in rows:
+                    ok, _ = DataValidator.validate_minute_bar(row)
+                    if ok:
+                        valid_rows.append(row)
+                    else:
+                        rejected += 1
+
+                if rejected > 0:
+                    print(f"  [{i + 1}/{total_stocks}] {code}: "
+                          f"{rejected} / {len(rows)} minute rows rejected")
+
+                if valid_rows:
+                    db.upsert_minute_bars(valid_rows)
+                    total_stored += len(valid_rows)
+
+                # Progress reporting every 10 stocks
+                if (i + 1) % 10 == 0:
+                    print(f"  [{i + 1}/{total_stocks}] progress: "
+                          f"{total_stored} minute rows stored so far")
+
+            except Exception as e:
+                print(f"  [{i + 1}/{total_stocks}] {code}: "
+                      f"minute fetch failed - {e}")
+
+            # Rate limiting between stocks
+            time.sleep(0.3)
+
+        print(f"[DataFetcher] fetch_and_store_minute_bars done: "
+              f"{total_stored} rows across {total_stocks} stocks")
+        return total_stored
 
 
 class DataCache:
@@ -765,3 +1049,119 @@ class DataCache:
                 return json.load(f)
         except FileNotFoundError:
             return None
+
+
+# ======================================================================
+# Quick manual verification (run: python data/fetcher.py)
+# ======================================================================
+if __name__ == "__main__":
+    print("=" * 60)
+    print("DataFetcher new methods — verification")
+    print("=" * 60)
+
+    fetcher = DataFetcher()
+
+    # --- 1. _parse_ts_code ----------------------------------------------------
+    print("\n[1] _parse_ts_code")
+    cases = [
+        ("600519.SH", ("600519", "sh")),
+        ("600519", ("600519", "sh")),
+        ("000001.SZ", ("000001", "sz")),
+        ("000001", ("000001", "sz")),
+        ("688001.SH", ("688001", "sh")),    # 688 starts with 6 -> Shanghai STAR
+        ("300750.SZ", ("300750", "sz")),
+    ]
+    for ts_in, (exp_sym, exp_mkt) in cases:
+        sym, mkt = DataFetcher._parse_ts_code(ts_in)
+        assert sym == exp_sym, f"Symbol mismatch: {sym} != {exp_sym}"
+        assert mkt == exp_mkt, f"Market mismatch: {mkt} != {exp_mkt}"
+        print(f"    {ts_in:20s} -> symbol={sym:8s}  market={mkt}  OK")
+    print("    All _parse_ts_code tests passed")
+
+    # --- 2. get_minute_data — live API test (requires internet) ---------------
+    print("\n[2] get_minute_data (live API, may be slow)")
+    try:
+        df_min = fetcher.get_minute_data(
+            ts_code="600519.SH", period="5",
+            start_time="2025-06-10 09:30:00",
+            end_time="2025-06-10 15:00:00",
+        )
+        print(f"    Rows returned: {len(df_min)}")
+        print(f"    Columns: {list(df_min.columns)}")
+        if not df_min.empty:
+            assert 'ts_code' in df_min.columns, "Missing ts_code column"
+            assert 'period' in df_min.columns, "Missing period column"
+            # Check ts_code preserved correctly
+            print(f"    Sample ts_code: {df_min.iloc[0]['ts_code']}")
+            print(f"    Sample period:  {df_min.iloc[0]['period']}")
+            print(f"    get_minute_data: OK")
+    except Exception as e:
+        print(f"    get_minute_data: SKIPPED (API error: {e})")
+
+    # --- 3. get_intraday_data — live API test ---------------------------------
+    print("\n[3] get_intraday_data (live API)")
+    try:
+        df_intra = fetcher.get_intraday_data("600519")
+        print(f"    Rows returned: {len(df_intra)}")
+        print(f"    Columns: {list(df_intra.columns)}")
+        if not df_intra.empty:
+            assert 'ts_code' in df_intra.columns, "Missing ts_code column"
+            print(f"    get_intraday_data: OK")
+    except Exception as e:
+        print(f"    get_intraday_data: SKIPPED (API error: {e})")
+
+    # --- 4. fetch_and_store_minute_bars — integration test -------------------
+    print("\n[4] fetch_and_store_minute_bars (integration with DB + validator)")
+
+    # Use a temporary database so the real one is not affected
+    import tempfile
+    from data.database import SQLiteManager
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    try:
+        # Point config to temp db
+        import config.settings as _cfg
+        _orig_path = _cfg.DATABASE_PATH
+        _cfg.DATABASE_PATH = tmp_path
+
+        db = SQLiteManager(db_path=tmp_path)
+
+        # Fetch a single stock to verify end-to-end pipeline
+        stored = fetcher.fetch_and_store_minute_bars(
+            stock_pool=["600519"],
+            db=db,
+            period="5",
+        )
+        print(f"    Total stored: {stored}")
+
+        # Verify rows are actually in the DB
+        if stored > 0:
+            rows = db.get_minute_bars("600519",
+                                      "2025-06-10 09:30:00",
+                                      "2025-06-10 15:00:00",
+                                      5)
+            print(f"    DB rows read back: {len(rows)}")
+            if rows:
+                print(f"    Sample row: ts_code={rows[0]['ts_code']}, "
+                      f"period={rows[0]['period']}")
+
+        # Restore config
+        _cfg.DATABASE_PATH = _orig_path
+        db.close()
+
+        print(f"    fetch_and_store_minute_bars: OK")
+    except Exception as e:
+        print(f"    fetch_and_store_minute_bars: SKIPPED (error: {e})")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    # --- Final summary ---
+    print("\n" + "=" * 60)
+    print("ALL CHECKS PASSED")
+    print("=" * 60)

@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K线策略可视化 — A股量化交易系统</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<style>
+:root {
+    --bg: #0f172a;
+    --bg-card: #1e293b;
+    --bg-input: #334155;
+    --border: #475569;
+    --text: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --accent: #38bdf8;
+    --buy: #22c55e;
+    --sell: #ef4444;
+    --gold: #f59e0b;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+}
+
+/* ── Header ── */
+.header {
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.header h1 {
+    font-size: 1.3rem;
+    font-weight: 700;
+    background: linear-gradient(90deg, #38bdf8, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.header-links a {
+    color: var(--text-secondary);
+    text-decoration: none;
+    margin-left: 20px;
+    font-size: 0.85rem;
+    transition: color 0.2s;
+}
+.header-links a:hover { color: var(--accent); }
+
+/* ── Layout ── */
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 16px 24px;
+}
+
+/* ── Controls ── */
+.controls {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 16px;
+    padding: 16px;
+    background: var(--bg-card);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+}
+
+.control-group { display: flex; flex-direction: column; gap: 4px; }
+.control-group label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+/* Stock selector with search */
+.stock-select-wrapper { position: relative; min-width: 260px; }
+.stock-search {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.stock-search:focus { border-color: var(--accent); }
+.stock-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    max-height: 300px;
+    overflow-y: auto;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 0 0 8px 8px;
+    z-index: 100;
+}
+.stock-dropdown.show { display: block; }
+.stock-option {
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    border-bottom: 1px solid rgba(71,85,105,0.3);
+    display: flex;
+    justify-content: space-between;
+}
+.stock-option:hover { background: rgba(56,189,248,0.15); color: var(--accent); }
+.stock-option .code { font-weight: 600; font-family: monospace; }
+.stock-option .name { color: var(--text-secondary); }
+
+/* Strategy buttons */
+.strategy-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.strategy-btn {
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-input);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+.strategy-btn:hover { border-color: var(--accent); background: rgba(56,189,248,0.1); }
+.strategy-btn.active {
+    border-color: var(--accent);
+    background: rgba(56,189,248,0.2);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+/* Date inputs */
+.date-inputs { display: flex; gap: 8px; align-items: center; }
+.date-inputs input {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-family: monospace;
+    width: 130px;
+    outline: none;
+}
+.date-inputs input:focus { border-color: var(--accent); }
+.date-inputs span { color: var(--text-secondary); }
+
+/* Run button */
+.run-btn {
+    padding: 10px 28px;
+    background: linear-gradient(135deg, #38bdf8, #818cf8);
+    border: none;
+    border-radius: 8px;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    margin-left: auto;
+}
+.run-btn:hover { opacity: 0.9; }
+.run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Metrics Cards ── */
+.metrics-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.metric-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    text-align: center;
+}
+.metric-card .label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+}
+.metric-card .value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+}
+.metric-card .value.positive { color: var(--buy); }
+.metric-card .value.negative { color: var(--sell); }
+.metric-card .value.neutral { color: var(--accent); }
+
+/* ── Chart ── */
+.chart-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px;
+    margin-bottom: 16px;
+    min-height: 500px;
+}
+.chart-container .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 500px;
+    color: var(--text-secondary);
+    font-size: 1rem;
+}
+
+/* ── Trade Table ── */
+.section-title {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 12px;
+    color: var(--text);
+}
+.trade-table-wrap {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 24px;
+}
+.trade-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+.trade-table th {
+    background: rgba(30,41,59,0.8);
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 10px 14px;
+    text-align: right;
+    border-bottom: 2px solid var(--border);
+}
+.trade-table th:first-child { text-align: left; }
+.trade-table td {
+    padding: 8px 14px;
+    text-align: right;
+    border-bottom: 1px solid rgba(71,85,105,0.3);
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+}
+.trade-table td:first-child { text-align: left; font-family: inherit; }
+.trade-table tr:hover { background: rgba(56,189,248,0.05); }
+.trade-table .pnl-positive { color: var(--buy); font-weight: 600; }
+.trade-table .pnl-negative { color: var(--sell); font-weight: 600; }
+.no-trades {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-secondary);
+}
+
+/* ── Toast ── */
+.toast {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: var(--sell);
+    color: #fff;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    z-index: 999;
+    display: none;
+    animation: fadeIn 0.3s;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>📈 K线策略可视化</h1>
+    <div class="header-links">
+        <a href="/app.html">回测面板</a>
+        <a href="/live.html">实盘交易</a>
+        <a href="/">首页</a>
+    </div>
+</div>
+
+<div class="container">
+
+    <!-- Controls -->
+    <div class="controls">
+        <div class="control-group">
+            <label>股票</label>
+            <div class="stock-select-wrapper">
+                <input type="text" class="stock-search" id="stockSearch"
+                       placeholder="输入代码或名称搜索..." autocomplete="off">
+                <div class="stock-dropdown" id="stockDropdown"></div>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <label>策略</label>
+            <div class="strategy-btns" id="strategyBtns">
+                <button class="strategy-btn active" data-strategy="momentum">🚀 动量</button>
+                <button class="strategy-btn" data-strategy="trend_following">📐 趋势跟随</button>
+                <button class="strategy-btn" data-strategy="mean_reversion">🔄 均值回归</button>
+                <button class="strategy-btn" data-strategy="ma_crossover">✂️ 均线交叉</button>
+                <button class="strategy-btn" data-strategy="breakout">💥 突破</button>
+                <button class="strategy-btn" data-strategy="low_volatility">🛡️ 低波动</button>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <label>日期区间</label>
+            <div class="date-inputs">
+                <input type="text" id="startDate" value="20240101" maxlength="8">
+                <span>→</span>
+                <input type="text" id="endDate" value="20260612" maxlength="8">
+            </div>
+        </div>
+
+        <button class="run-btn" id="runBtn" onclick="runAnalysis()">▶ 运行分析</button>
+    </div>
+
+    <!-- Metrics -->
+    <div class="metrics-row" id="metricsRow">
+        <div class="metric-card">
+            <div class="label">累计收益率</div>
+            <div class="value neutral" id="mTotalReturn">--</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">交易次数</div>
+            <div class="value neutral" id="mTrades">--</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">胜率</div>
+            <div class="value neutral" id="mWinRate">--</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">平均收益</div>
+            <div class="value neutral" id="mAvgReturn">--</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">最大单笔收益</div>
+            <div class="value neutral" id="mMaxReturn">--</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">最小单笔收益</div>
+            <div class="value neutral" id="mMinReturn">--</div>
+        </div>
+        <div class="metric-card">
+            <div class="label">平均持仓天数</div>
+            <div class="value neutral" id="mAvgDays">--</div>
+        </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="chart-container" id="chartContainer">
+        <div class="loading">请选择股票和策略，点击「运行分析」查看K线图与买卖点</div>
+    </div>
+
+    <!-- Trade History -->
+    <div class="section-title">📋 交易明细</div>
+    <div class="trade-table-wrap">
+        <table class="trade-table" id="tradeTable">
+            <thead>
+                <tr>
+                    <th>买入日期</th><th>买入价</th><th>卖出日期</th><th>卖出价</th>
+                    <th>盈亏%</th><th>持仓天数</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td colspan="6" class="no-trades">暂无交易记录，请先运行分析</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+let allStocks = [];
+let selectedStock = null;
+let currentResult = null;
+
+// ============================================================
+// Init
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+    loadStockList();
+    setupStockSearch();
+    setupStrategyButtons();
+});
+
+// ============================================================
+// Load stock list
+// ============================================================
+async function loadStockList() {
+    try {
+        const resp = await fetch('/api/kline/stocks');
+        const data = await resp.json();
+        allStocks = data.stocks;
+        // Default select 600519 贵州茅台
+        const moutai = allStocks.find(s => s.code === '600519');
+        if (moutai) selectStock(moutai);
+        renderDropdown('');
+    } catch (e) {
+        showToast('加载股票列表失败: ' + e.message);
+    }
+}
+
+// ============================================================
+// Stock search / dropdown
+// ============================================================
+function setupStockSearch() {
+    const input = document.getElementById('stockSearch');
+    const dropdown = document.getElementById('stockDropdown');
+
+    input.addEventListener('input', () => {
+        renderDropdown(input.value.trim());
+        dropdown.classList.add('show');
+    });
+
+    input.addEventListener('focus', () => {
+        renderDropdown(input.value.trim());
+        dropdown.classList.add('show');
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.stock-select-wrapper')) {
+            dropdown.classList.remove('show');
+        }
+    });
+
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            dropdown.classList.remove('show');
+            runAnalysis();
+        }
+    });
+}
+
+function renderDropdown(query) {
+    const dropdown = document.getElementById('stockDropdown');
+    const q = query.toLowerCase();
+    const filtered = q
+        ? allStocks.filter(s =>
+            s.code.includes(q) || s.name.toLowerCase().includes(q) || s.ts_code.toLowerCase().includes(q))
+        : allStocks;
+
+    dropdown.innerHTML = filtered.slice(0, 50).map(s => `
+        <div class="stock-option" data-code="${s.code}" onclick="selectStockByCode('${s.code}')">
+            <span><span class="code">${s.code}</span> <span style="color:#94a3b8">${s.ts_code}</span></span>
+            <span class="name">${s.name}</span>
+        </div>
+    `).join('');
+
+    if (filtered.length === 0) {
+        dropdown.innerHTML = '<div class="stock-option" style="color:var(--text-secondary)">未找到匹配股票</div>';
+    }
+}
+
+function selectStockByCode(code) {
+    const stock = allStocks.find(s => s.code === code);
+    if (stock) selectStock(stock);
+    document.getElementById('stockDropdown').classList.remove('show');
+}
+
+function selectStock(stock) {
+    selectedStock = stock;
+    document.getElementById('stockSearch').value = `${stock.code}  ${stock.name}`;
+}
+
+// ============================================================
+// Strategy buttons
+// ============================================================
+function setupStrategyButtons() {
+    document.getElementById('strategyBtns').addEventListener('click', (e) => {
+        if (e.target.classList.contains('strategy-btn')) {
+            document.querySelectorAll('.strategy-btn').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+        }
+    });
+}
+
+function getSelectedStrategy() {
+    const active = document.querySelector('.strategy-btn.active');
+    return active ? active.dataset.strategy : 'momentum';
+}
+
+// ============================================================
+// Run analysis
+// ============================================================
+async function runAnalysis() {
+    if (!selectedStock) {
+        showToast('请先选择股票');
+        return;
+    }
+
+    const strategy = getSelectedStrategy();
+    const startDate = document.getElementById('startDate').value.trim() || '20240101';
+    const endDate = document.getElementById('endDate').value.trim() || '20260612';
+
+    const btn = document.getElementById('runBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ 分析中...';
+
+    document.getElementById('chartContainer').innerHTML =
+        '<div class="loading">⏳ 正在加载数据并运行策略...</div>';
+
+    try {
+        const resp = await fetch('/api/kline/strategy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                code: selectedStock.code,
+                strategy: strategy,
+                start_date: startDate,
+                end_date: endDate,
+            }),
+        });
+
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.detail || '请求失败');
+        }
+
+        currentResult = await resp.json();
+        renderChart(currentResult);
+        renderMetrics(currentResult.metrics);
+        renderTrades(currentResult.trades);
+    } catch (e) {
+        showToast('分析失败: ' + e.message);
+        document.getElementById('chartContainer').innerHTML =
+            `<div class="loading" style="color:var(--sell)">❌ ${e.message}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '▶ 运行分析';
+    }
+}
+
+// ============================================================
+// Render candlestick chart with Plotly
+// ============================================================
+function renderChart(result) {
+    const bars = result.bars;
+    const signals = result.signals;
+    const strategyName = result.strategy_name;
+
+    if (!bars || bars.length === 0) {
+        document.getElementById('chartContainer').innerHTML =
+            '<div class="loading">该股票在选定日期范围内无数据</div>';
+        return;
+    }
+
+    // Build signal lookup map: date -> signal
+    const signalMap = {};
+    signals.forEach(s => {
+        signalMap[s.date] = s;
+    });
+
+    // Prepare candlestick data
+    const dates = bars.map(b => {
+        const d = b.date;
+        return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+    });
+
+    const opens = bars.map(b => b.open);
+    const highs = bars.map(b => b.high);
+    const lows = bars.map(b => b.low);
+    const closes = bars.map(b => b.close);
+    const volumes = bars.map(b => b.volume);
+
+    // MA lines
+    const ma5 = bars.map(b => b.ma5);
+    const ma10 = bars.map(b => b.ma10);
+    const ma20 = bars.map(b => b.ma20);
+    const ma60 = bars.map(b => b.ma60);
+
+    // Buy/Sell markers with annotations
+    const buyMarkers = { dates: [], prices: [], reasons: [] };
+    const sellMarkers = { dates: [], prices: [], reasons: [] };
+
+    signals.forEach(s => {
+        if (s.signal === 'BUY') {
+            buyMarkers.dates.push(`${s.date.slice(0,4)}-${s.date.slice(4,6)}-${s.date.slice(6,8)}`);
+            buyMarkers.prices.push(s.price);
+            buyMarkers.reasons.push(s.reason);
+        } else {
+            sellMarkers.dates.push(`${s.date.slice(0,4)}-${s.date.slice(4,6)}-${s.date.slice(6,8)}`);
+            sellMarkers.prices.push(s.price);
+            sellMarkers.reasons.push(s.reason);
+        }
+    });
+
+    // Build traces
+    const traces = [];
+
+    // Candlestick
+    traces.push({
+        type: 'candlestick',
+        x: dates,
+        open: opens,
+        high: highs,
+        low: lows,
+        close: closes,
+        name: result.name,
+        increasing: { line: { color: '#ef4444', width: 1 }, fillcolor: '#ef4444' },
+        decreasing: { line: { color: '#22c55e', width: 1 }, fillcolor: '#22c55e' },
+        xaxis: 'x',
+        yaxis: 'y',
+        hoverinfo: 'text',
+        hovertext: bars.map(b => {
+            const chg = b.pct_chg != null ? (b.pct_chg > 0 ? '+' : '') + b.pct_chg.toFixed(2) + '%' : '';
+            return `${b.date}<br>O:${b.open} H:${b.high} L:${b.low} C:${b.close}<br>涨跌:${chg} 量:${(b.volume/10000).toFixed(0)}万`;
+        }),
+    });
+
+    // MA5
+    traces.push({
+        type: 'scatter', mode: 'lines',
+        x: dates, y: ma5,
+        name: 'MA5',
+        line: { color: '#f59e0b', width: 1, dash: 'solid' },
+        xaxis: 'x', yaxis: 'y',
+        visible: true,
+    });
+
+    // MA10
+    traces.push({
+        type: 'scatter', mode: 'lines',
+        x: dates, y: ma10,
+        name: 'MA10',
+        line: { color: '#a78bfa', width: 1, dash: 'dot' },
+        xaxis: 'x', yaxis: 'y',
+        visible: true,
+    });
+
+    // MA20
+    traces.push({
+        type: 'scatter', mode: 'lines',
+        x: dates, y: ma20,
+        name: 'MA20',
+        line: { color: '#38bdf8', width: 1.5, dash: 'dash' },
+        xaxis: 'x', yaxis: 'y',
+        visible: true,
+    });
+
+    // MA60
+    traces.push({
+        type: 'scatter', mode: 'lines',
+        x: dates, y: ma60,
+        name: 'MA60',
+        line: { color: '#f87171', width: 1, dash: 'longdash' },
+        xaxis: 'x', yaxis: 'y',
+        visible: true,
+    });
+
+    // Volume bars
+    const volColors = bars.map((b, i) => i > 0 && b.close >= bars[i-1].close ? '#ef444466' : '#22c55e66');
+    traces.push({
+        type: 'bar',
+        x: dates, y: volumes,
+        name: '成交量',
+        marker: { color: volColors },
+        xaxis: 'x',
+        yaxis: 'y2',
+        showlegend: false,
+    });
+
+    // Buy markers (green upward triangles)
+    if (buyMarkers.dates.length > 0) {
+        traces.push({
+            type: 'scatter', mode: 'markers+text',
+            x: buyMarkers.dates,
+            y: buyMarkers.prices.map(p => p * 0.97),  // Below candle for visibility, actually plot at low
+            name: '买入',
+            marker: {
+                symbol: 'triangle-up',
+                size: 14,
+                color: '#22c55e',
+                line: { color: '#fff', width: 1 },
+            },
+            text: '买',
+            textposition: 'bottom center',
+            textfont: { color: '#22c55e', size: 10, family: 'sans-serif' },
+            hovertemplate: '买入 %{x}<br>价格: %{customdata}<br>%{text}<extra></extra>',
+            customdata: buyMarkers.prices,
+            textarray: buyMarkers.reasons,
+            xaxis: 'x', yaxis: 'y',
+            showlegend: true,
+        });
+    }
+
+    // Sell markers (red downward triangles)
+    if (sellMarkers.dates.length > 0) {
+        traces.push({
+            type: 'scatter', mode: 'markers+text',
+            x: sellMarkers.dates,
+            y: sellMarkers.prices.map(p => p * 1.03),  // Above candle
+            name: '卖出',
+            marker: {
+                symbol: 'triangle-down',
+                size: 14,
+                color: '#ef4444',
+                line: { color: '#fff', width: 1 },
+            },
+            text: '卖',
+            textposition: 'top center',
+            textfont: { color: '#ef4444', size: 10, family: 'sans-serif' },
+            hovertemplate: '卖出 %{x}<br>价格: %{customdata}<br>%{text}<extra></extra>',
+            customdata: sellMarkers.prices,
+            textarray: sellMarkers.reasons,
+            xaxis: 'x', yaxis: 'y',
+            showlegend: true,
+        });
+    }
+
+    // Layout
+    const layout = {
+        title: {
+            text: `${result.name} (${result.code}) — ${strategyName}`,
+            font: { color: '#e2e8f0', size: 16 },
+        },
+        paper_bgcolor: '#1e293b',
+        plot_bgcolor: '#0f172a',
+        font: { color: '#e2e8f0' },
+        xaxis: {
+            title: '',
+            rangeslider: { visible: false },
+            gridcolor: '#334155',
+            linecolor: '#475569',
+            showgrid: true,
+            type: 'date',
+        },
+        yaxis: {
+            title: '价格 (元)',
+            gridcolor: '#334155',
+            linecolor: '#475569',
+            showgrid: true,
+            side: 'right',
+        },
+        yaxis2: {
+            title: '成交量',
+            overlaying: 'y',
+            side: 'left',
+            showgrid: false,
+            range: [0, Math.max(...volumes) * 5],
+            tickformat: '.2s',
+        },
+        legend: {
+            orientation: 'h',
+            x: 0, y: 1.12,
+            font: { color: '#94a3b8', size: 11 },
+        },
+        margin: { t: 50, r: 60, l: 70, b: 40 },
+        hovermode: 'x unified',
+        dragmode: 'pan',
+    };
+
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d'],
+        displaylogo: false,
+        toImageButtonOptions: {
+            format: 'png',
+            filename: `${result.code}_${result.strategy}`,
+        },
+    };
+
+    document.getElementById('chartContainer').innerHTML = '';
+    Plotly.newPlot('chartContainer', traces, layout, config);
+}
+
+// ============================================================
+// Render metrics
+// ============================================================
+function renderMetrics(m) {
+    document.getElementById('mTotalReturn').textContent = formatPct(m.total_return);
+    document.getElementById('mTotalReturn').className = 'value ' + colorClass(m.total_return);
+    document.getElementById('mTrades').textContent = m.total_trades;
+    document.getElementById('mTrades').className = 'value neutral';
+    document.getElementById('mWinRate').textContent = m.win_rate + '%';
+    document.getElementById('mWinRate').className = 'value ' + (m.win_rate >= 50 ? 'positive' : 'negative');
+    document.getElementById('mAvgReturn').textContent = formatPct(m.avg_return);
+    document.getElementById('mAvgReturn').className = 'value ' + colorClass(m.avg_return);
+    document.getElementById('mMaxReturn').textContent = formatPct(m.max_return);
+    document.getElementById('mMaxReturn').className = 'value ' + colorClass(m.max_return);
+    document.getElementById('mMinReturn').textContent = formatPct(m.min_return);
+    document.getElementById('mMinReturn').className = 'value ' + colorClass(m.min_return);
+    document.getElementById('mAvgDays').textContent = m.avg_hold_days;
+    document.getElementById('mAvgDays').className = 'value neutral';
+}
+
+function formatPct(v) {
+    if (v == null) return '--';
+    return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+}
+
+function colorClass(v) {
+    if (v == null) return 'neutral';
+    return v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral';
+}
+
+// ============================================================
+// Render trades table
+// ============================================================
+function renderTrades(trades) {
+    const tbody = document.querySelector('#tradeTable tbody');
+
+    if (!trades || trades.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="no-trades">该策略在选定区间内无完整交易</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = trades.map(t => {
+        const pnlClass = t.pnl_pct > 0 ? 'pnl-positive' : 'pnl-negative';
+        return `
+            <tr>
+                <td>${fmtDate(t.entry_date)}</td>
+                <td>${t.entry_price}</td>
+                <td>${fmtDate(t.exit_date)}</td>
+                <td>${t.exit_price}</td>
+                <td class="${pnlClass}">${(t.pnl_pct >= 0 ? '+' : '') + t.pnl_pct.toFixed(2)}%</td>
+                <td>${t.days}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function fmtDate(d) {
+    if (!d) return '--';
+    const s = String(d);
+    if (s.length === 8) return `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+    return s;
+}
+
+// ============================================================
+// Toast
+// ============================================================
+function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    setTimeout(() => { t.style.display = 'none'; }, 3000);
+}
+</script>
+</body>
+</html>

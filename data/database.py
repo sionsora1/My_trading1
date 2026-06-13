@@ -384,6 +384,25 @@ class SQLiteManager:
         row = cur.fetchone()
         return dict(row) if row else None
 
+    def get_all_stock_codes(self) -> list[str]:
+        """Return all stock codes from stock_info as plain codes (without .SH/.SZ suffix).
+
+        Returns an empty list if the stock_info table is empty.
+        """
+        sql = "SELECT ts_code FROM stock_info ORDER BY ts_code"
+        cur = self._conn.execute(sql)
+        codes = []
+        for row in cur.fetchall():
+            ts_code = row["ts_code"]
+            # Strip .SH / .SZ suffix to get plain code
+            if ts_code.endswith('.SH'):
+                codes.append(ts_code[:-3])
+            elif ts_code.endswith('.SZ'):
+                codes.append(ts_code[:-3])
+            else:
+                codes.append(ts_code)
+        return codes
+
     # ------------------------------------------------------------------
     # data_log CRUD
     # ------------------------------------------------------------------
@@ -465,6 +484,90 @@ class SQLiteManager:
         sql = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         cur = self._conn.execute(sql)
         return [row["name"] for row in cur.fetchall()]
+
+    def sync_from_cache(self, cache_dir: str = None) -> dict:
+        """Sync market data from JSON cache files into SQLite.
+
+        Reads all market_data_*.json files from the cache directory and
+        upserts daily_bars, stock_info, and fundamentals rows.
+
+        Args:
+            cache_dir: Directory containing JSON cache files.
+                       Defaults to DATA_CACHE_DIR.
+
+        Returns:
+            Dict with counts of rows inserted per table.
+        """
+        import glob
+
+        cache_dir = cache_dir or DATA_CACHE_DIR
+        cache_dir = os.path.abspath(cache_dir)
+        pattern = os.path.join(cache_dir, 'market_data_*.json')
+
+        counts = {'daily_bars': 0, 'stock_info': 0, 'files': 0}
+
+        for filepath in sorted(glob.glob(pattern)):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    market_data = json.load(f)
+            except Exception:
+                continue
+
+            if not isinstance(market_data, dict):
+                continue
+
+            counts['files'] += 1
+            stock_info_rows = []
+            daily_bar_rows = []
+            seen_stocks = set()
+
+            for date_str, stocks in market_data.items():
+                if not isinstance(stocks, dict):
+                    continue
+                for code, stock in stocks.items():
+                    if not isinstance(stock, dict):
+                        continue
+                    ts_code = f"{code}.SH" if str(code).startswith('6') else f"{code}.SZ"
+
+                    # Daily bar
+                    daily_bar_rows.append({
+                        'ts_code': ts_code,
+                        'trade_date': date_str,
+                        'open': stock.get('open', 0) or 0,
+                        'high': stock.get('high', 0) or 0,
+                        'low': stock.get('low', 0) or 0,
+                        'close': stock.get('close', 0) or 0,
+                        'volume': stock.get('volume', 0) or 0,
+                        'amount': (stock.get('volume', 0) or 0) * (stock.get('close', 0) or 0),
+                        'pct_chg': (float(stock.get('return_1d', 0) or 0)) * 100,
+                        'turnover': stock.get('turnover', 0) or 0,
+                    })
+
+                    # Stock info (once per stock)
+                    if code not in seen_stocks:
+                        seen_stocks.add(code)
+                        market = 'SH' if str(code).startswith('6') else 'SZ'
+                        stock_info_rows.append({
+                            'ts_code': ts_code,
+                            'name': stock.get('name', code),
+                            'industry': stock.get('industry', '未知'),
+                            'market': market,
+                            'market_cap': stock.get('market_cap', 0) or 0,
+                            'pe': stock.get('pe', 0) or 0,
+                            'pb': stock.get('pb', 0) or 0,
+                            'list_date': '',
+                            'delist_date': '',
+                        })
+
+            # Batch upsert
+            if daily_bar_rows:
+                self.upsert_daily_bars(daily_bar_rows)
+                counts['daily_bars'] += len(daily_bar_rows)
+            if stock_info_rows:
+                self.upsert_stock_info(stock_info_rows)
+                counts['stock_info'] += len(stock_info_rows)
+
+        return counts
 
     def close(self):
         """Close the database connection."""

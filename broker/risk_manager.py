@@ -36,6 +36,11 @@ class RiskState:
     daily_buy_amount: float = 0       # 当日买入金额
     max_daily_loss_triggered: bool = False  # 是否触发日亏损限制
     trading_halted: bool = False      # 是否已暂停交易
+    # 新增：连续亏损 & 最大回撤追踪
+    peak_equity: float = 0            # 权益历史峰值
+    consecutive_loss_days: int = 0    # 连续亏损天数
+    max_consecutive_loss_days: int = 5  # 连续亏损上限
+    max_drawdown_rate: float = -0.15  # 最大回撤限制（相对峰值）
 
 
 class RiskManager:
@@ -110,6 +115,16 @@ class RiskManager:
 
         # 5. 亏损风控
         check = self._check_daily_loss(order, account)
+        if not check.passed:
+            return check
+
+        # 5b. 连续亏损检查
+        check = self._check_consecutive_losses(order, account)
+        if not check.passed:
+            return check
+
+        # 5c. 最大回撤检查
+        check = self._check_max_drawdown(order, account)
         if not check.passed:
             return check
 
@@ -261,16 +276,60 @@ class RiskManager:
 
         return RiskCheckResult(passed=True)
 
+    def _check_consecutive_losses(self, order: OrderRequest, account: AccountInfo) -> RiskCheckResult:
+        """连续亏损检查 — 连续N天亏损则暂停交易"""
+        if self.state.consecutive_loss_days >= self.state.max_consecutive_loss_days:
+            self.state.trading_halted = True
+            self._save_state()
+            return RiskCheckResult(
+                passed=False,
+                reason=f'连续亏损{self.state.consecutive_loss_days}天（上限{self.state.max_consecutive_loss_days}天），交易暂停',
+                severity='BLOCK'
+            )
+        return RiskCheckResult(passed=True)
+
+    def _check_max_drawdown(self, order: OrderRequest, account: AccountInfo) -> RiskCheckResult:
+        """最大回撤检查 — 从权益峰值回撤超限则暂停"""
+        if self.state.peak_equity <= 0:
+            return RiskCheckResult(passed=True)
+
+        drawdown = (account.total_assets - self.state.peak_equity) / self.state.peak_equity
+        if drawdown <= self.state.max_drawdown_rate:
+            self.state.trading_halted = True
+            self._save_state()
+            return RiskCheckResult(
+                passed=False,
+                reason=f'触发最大回撤限制（回撤{drawdown:.1%} ≥ {self.state.max_drawdown_rate:.1%}），交易暂停',
+                severity='BLOCK'
+            )
+        return RiskCheckResult(passed=True)
+
     def update_daily_state(self, account: AccountInfo):
-        """更新每日风控状态"""
-        # 检查是否跨日
+        """更新每日风控状态（含连续亏损和最大回撤追踪）"""
         today = datetime.now().strftime('%Y%m%d')
         if today != self.state.date:
-            # 新的一天，重置状态
+            # 跨日：判断昨天是否亏损，更新连续亏损计数
+            yesterday_loss = self.state.daily_loss_rate < -0.005  # 亏>0.5%算亏损日
+
+            # 保留需要跨日的字段
+            old_peak = max(self.state.peak_equity, account.total_assets)
+            old_consecutive = self.state.consecutive_loss_days
+            old_max_dd = self.state.max_drawdown_rate
+            old_max_consec = self.state.max_consecutive_loss_days
+
+            if yesterday_loss:
+                old_consecutive += 1
+            else:
+                old_consecutive = 0  # 有盈利日则重置
+
             self.state = RiskState(
                 date=today,
                 starting_equity=account.total_assets,
-                current_equity=account.total_assets
+                current_equity=account.total_assets,
+                peak_equity=old_peak,
+                consecutive_loss_days=old_consecutive,
+                max_consecutive_loss_days=old_max_consec,
+                max_drawdown_rate=old_max_dd,
             )
             self._save_state()
             return
@@ -278,6 +337,10 @@ class RiskManager:
         # 设置初始权益
         if self.state.starting_equity <= 0:
             self.state.starting_equity = account.total_assets
+
+        # 更新峰值权益
+        if account.total_assets > self.state.peak_equity:
+            self.state.peak_equity = account.total_assets
 
         # 更新当前状态
         self.state.current_equity = account.total_assets
@@ -308,6 +371,10 @@ class RiskManager:
             'max_daily_loss_triggered': self.state.max_daily_loss_triggered,
             'trading_halted': self.state.trading_halted,
             'max_daily_loss_limit': self.config.max_daily_loss_rate,
+            'peak_equity': self.state.peak_equity,
+            'consecutive_loss_days': self.state.consecutive_loss_days,
+            'max_consecutive_loss_days': self.state.max_consecutive_loss_days,
+            'max_drawdown_rate': self.state.max_drawdown_rate,
         }
 
     def reset_daily_state(self):

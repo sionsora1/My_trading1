@@ -59,8 +59,16 @@ class LiveTradingServer:
         """初始化券商连接器"""
         broker_config = self.config.get(self.broker_name, {})
         self.broker = get_broker(self.broker_name, broker_config)
+        self.broker_connection_failed = False
+        self.broker_fallback_reason = ''
+
         if not self.broker.connect():
-            print(f"[实盘] 券商连接失败，使用模拟盘")
+            self.broker_connection_failed = True
+            self.broker_fallback_reason = (
+                f'券商 "{self.broker_name}" 连接失败，已自动降级为模拟盘。'
+                f'请检查券商配置和网络连接。'
+            )
+            print(f'[实盘] ⚠️  {self.broker_fallback_reason}')
             self.broker = get_broker('sim', self.config.get('sim', {}))
             self.broker.connect()
             self.broker_name = 'sim'
@@ -108,6 +116,8 @@ class LiveTradingServer:
             'running': self.running,
             'broker_name': self.broker_name,
             'broker_label': BROKER_REGISTRY[self.broker_name]['name'],
+            'broker_connection_failed': getattr(self, 'broker_connection_failed', False),
+            'broker_fallback_reason': getattr(self, 'broker_fallback_reason', ''),
             'trade_mode': self.trade_mode,
             'trade_mode_label': '全自动' if self.trade_mode == 'auto' else '半自动',
             'account': {
@@ -509,6 +519,60 @@ class LiveTradingServer:
                 for k, v in positions.items()
             }
 
+            # ============================================================
+            # v2.0: SignalBus integration — use profile-driven strategies
+            # ============================================================
+            _signal_bus_signals = []
+            try:
+                from server import signal_bus as _sb, manual_broker as _mb
+                from config.strategy_profiles import get_active_profile
+                from strategy import get_strategy as _get_strat
+
+                # Load active strategy profile
+                _profile = get_active_profile()
+                _profile_strategy_names = _profile.get('strategies', [strategy_name] if strategy_name != 'all' else list(STRATEGY_REGISTRY.keys()))
+                _profile_strategies = [_get_strat(s) for s in _profile_strategy_names if s in STRATEGY_REGISTRY]
+
+                if _profile_strategies:
+                    # Route signals through SignalBus
+                    _bus_results = _sb.process(
+                        date=latest_date,
+                        market_data=latest_data,
+                        portfolio=portfolio,
+                        strategies=_profile_strategies,
+                        risk_manager=self.risk_manager,
+                    )
+
+                    if _bus_results:
+                        for _sig in _bus_results:
+                            _stock_info = latest_data.get(_sig['ts_code'], {})
+                            _signal_obj = Signal(
+                                ts_code=_sig['ts_code'],
+                                name=_stock_info.get('name', _sig['ts_code']),
+                                signal=_sig['signal'],
+                                weight=_sig.get('weight', 0),
+                                reason=_sig.get('reason', ''),
+                                price=_sig.get('price', _stock_info.get('close', 0)),
+                                strategy=_sig.get('strategy', 'signal_bus'),
+                            )
+                            _signal_bus_signals.append(_signal_obj)
+
+                        # If manual broker mode, submit signals for web confirmation
+                        if self.broker_name == 'manual':
+                            for _sig in _bus_results:
+                                try:
+                                    _mb.submit_order(
+                                        ts_code=_sig['ts_code'],
+                                        side=_sig['signal'],
+                                        quantity=_sig.get('suggest_qty', 100),
+                                        price=_sig.get('price', 0),
+                                        reason=f"[{_sig.get('strategy', 'signal_bus')}] {_sig.get('reason', '')}",
+                                    )
+                                except Exception as _e:
+                                    print(f"[实盘] ManualBroker submit failed for {_sig['ts_code']}: {_e}")
+            except Exception as _e:
+                print(f"[实盘] SignalBus integration skipped (degrading gracefully): {_e}")
+
             # 2. 确定要运行的策略列表
             if strategy_name == 'all':
                 strategies_to_run = list(STRATEGY_REGISTRY.keys())
@@ -517,33 +581,37 @@ class LiveTradingServer:
             else:
                 strategies_to_run = ['eight_factor']
 
-            # 3. 依次运行每个策略，汇总所有信号
-            all_filtered_signals = []
-            all_trades = []
+            # 3. 依次运行每个策略，汇总所有信号（v2.0: skip if SignalBus already provided signals）
+            if _signal_bus_signals:
+                all_filtered_signals = _signal_bus_signals
+                all_trades = []
+            else:
+                all_filtered_signals = []
+                all_trades = []
 
-            for s_name in strategies_to_run:
-                try:
-                    strategy = get_strategy(s_name)
-                    signals = strategy.generate_signals(latest_date, latest_data, portfolio)
+                for s_name in strategies_to_run:
+                    try:
+                        strategy = get_strategy(s_name)
+                        signals = strategy.generate_signals(latest_date, latest_data, portfolio)
 
-                    # 风控过滤
-                    for sig in signals:
-                        stock_info = latest_data.get(sig['ts_code'], {})
-                        signal_obj = Signal(
-                            ts_code=sig['ts_code'],
-                            name=stock_info.get('name', sig['ts_code']),
-                            signal=sig['signal'],
-                            weight=sig.get('weight', 0),
-                            reason=sig.get('reason', ''),
-                            price=stock_info.get('close', 0),
-                            strategy=s_name,
-                        )
+                        # 风控过滤
+                        for sig in signals:
+                            stock_info = latest_data.get(sig['ts_code'], {})
+                            signal_obj = Signal(
+                                ts_code=sig['ts_code'],
+                                name=stock_info.get('name', sig['ts_code']),
+                                signal=sig['signal'],
+                                weight=sig.get('weight', 0),
+                                reason=sig.get('reason', ''),
+                                price=stock_info.get('close', 0),
+                                strategy=s_name,
+                            )
 
-                        check = self.risk_manager.check_signal(signal_obj, account, positions, stock_info)
-                        if check.passed:
-                            all_filtered_signals.append(signal_obj)
-                except Exception as e:
-                    print(f"[实盘] 策略 {s_name} 执行失败: {e}")
+                            check = self.risk_manager.check_signal(signal_obj, account, positions, stock_info)
+                            if check.passed:
+                                all_filtered_signals.append(signal_obj)
+                    except Exception as e:
+                        print(f"[实盘] 策略 {s_name} 执行失败: {e}")
 
             # 4. 去重：同一股票如果多个策略都有信号，取置信度最高的
             seen_buy = set()
@@ -758,48 +826,146 @@ class LiveTradingServer:
     # ============================================================
 
     def _fetch_market_data(self, stock_pool: list, start_date: str, end_date: str) -> dict:
-        """获取行情数据（优先实时行情，失败则回退日线）"""
+        """
+        获取完整行情数据（历史衍生指标 + 今日实时价格）
+
+        策略需要的字段（ma5/ma10/ma20/ma60/return_20d/volatility等）
+        无法从实时API直接获取，必须从历史日线数据计算。
+        此方法从数据库加载历史数据计算衍生指标，再用实时API
+        更新今日OHLCV，确保策略收到完整可用的数据。
+        """
+        today = datetime.now().strftime('%Y%m%d')
         cache_filename = f'live_market_rt_{len(stock_pool)}stocks'
 
-        # 先查实时缓存（TTL 60秒）
-        market_data = self.cache.load_market_data(cache_filename)
-        if market_data and isinstance(market_data, dict) and len(market_data) > 0:
-            # 检查缓存是否过期
-            first_key = next(iter(market_data))
-            first_day_data = market_data.get(first_key, {})
-            if first_day_data:
-                first_stock = next(iter(first_day_data.values()), {})
-                cache_time = first_stock.get('_cached_at', 0) if isinstance(first_stock, dict) else 0
-                if cache_time and time.time() - cache_time < 60:
-                    return market_data
+        # ── 1. 从数据库加载历史日线并计算衍生指标 ──
+        market_data = self._build_market_data_from_db(stock_pool, start_date, end_date)
 
-        # 尝试实时行情（交易时段可用）
+        # ── 2. 交易时段：用实时行情更新今天的数据 ──
         can_trade, _ = is_trading_time()
         if can_trade:
             try:
-                rt_data = self.fetcher.build_realtime_market_data(stock_pool)
-                if rt_data:
-                    # 给每条数据打上缓存时间戳
-                    today = datetime.now().strftime('%Y%m%d')
-                    if today in rt_data:
-                        for code in rt_data[today]:
-                            rt_data[today][code]['_cached_at'] = time.time()
-                    # 缓存实时数据（短时间有效）
-                    self.cache.save_market_data(rt_data, cache_filename)
-                    print(f"[实盘] 实时行情获取成功，{len(rt_data.get(today, {}))} 只股票")
-                    return rt_data
+                rt_quotes = self.fetcher.get_realtime_quotes(stock_pool)
+                if rt_quotes:
+                    today_data = {}
+                    for code, quote in rt_quotes.items():
+                        # 保留已有的衍生指标（ma/return/volatility），只更新OHLCV
+                        existing = market_data.get(today, {}).get(code, {})
+                        today_data[code] = {
+                            **existing,
+                            'close': quote.get('close', 0) or 0,
+                            'open': quote.get('open', 0) or 0,
+                            'high': quote.get('high', 0) or 0,
+                            'low': quote.get('low', 0) or 0,
+                            'volume': quote.get('volume', 0) or 0,
+                            'amount': quote.get('amount', 0) or 0,
+                            'turnover': quote.get('turnover', 0) or 0,
+                            'change_pct': quote.get('change_pct', 0) or 0,
+                            'name': quote.get('name', existing.get('name', code)),
+                            '_cached_at': time.time(),
+                        }
+                    if today_data:
+                        market_data[today] = today_data
+                        self.cache.save_market_data(market_data, cache_filename)
+                        n_stocks = len(today_data)
+                        n_dates = len(market_data)
+                        print(f"[实盘] 数据融合完成: {n_dates}天历史 + {n_stocks}只实时行情")
             except Exception as e:
-                print(f"[实盘] 实时行情获取失败: {e}")
+                print(f"[实盘] 实时行情获取失败，使用历史数据: {e}")
 
-        # 非交易时段：使用缓存的最新数据（避免用昨日收盘价冒充实时价）
-        market_data = self.cache.load_market_data(cache_filename)
-        if market_data and isinstance(market_data, dict) and len(market_data) > 0:
-            return market_data
+        return market_data
 
-        # 无缓存时回退：日线数据（仅作为最后手段）
-        market_data = self.fetcher.build_market_data_by_date(stock_pool, start_date, end_date)
-        if market_data and len(market_data) > 0:
-            self.cache.save_market_data(market_data, cache_filename)
+    def _build_market_data_from_db(self, stock_pool: list,
+                                   start_date: str, end_date: str) -> dict:
+        """
+        从数据库加载历史日线数据，计算完整衍生指标（MA/收益率/波动率等）。
+
+        这是实盘策略信号质量的基础——没有衍生指标，所有策略都无法正常工作。
+        """
+        from data.database import SQLiteManager
+        import pandas as pd
+
+        db = SQLiteManager()
+        extended_start = (datetime.strptime(start_date, '%Y%m%d')
+                          - timedelta(days=180)).strftime('%Y%m%d')
+
+        market_data = {}
+
+        for code in stock_pool:
+            ts_code = f"{code}.SH" if str(code).startswith('6') else f"{code}.SZ"
+            try:
+                bars = db.get_daily_bars(ts_code, extended_start, end_date)
+                if len(bars) < 5:
+                    continue
+
+                df = pd.DataFrame(bars)
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+                close = df['close']
+                volume = df['volume'] if 'volume' in df.columns else close * 100
+
+                # 均线
+                df['ma5'] = close.rolling(5, min_periods=1).mean()
+                df['ma10'] = close.rolling(10, min_periods=1).mean()
+                df['ma20'] = close.rolling(20, min_periods=1).mean()
+                df['ma60'] = close.rolling(60, min_periods=1).mean()
+                df['volume_ma20'] = volume.rolling(20, min_periods=1).mean()
+
+                # 收益率
+                df['return_1d'] = close.pct_change(1)
+                df['return_5d'] = close.pct_change(5)
+                df['return_20d'] = close.pct_change(20)
+                df['return_60d'] = close.pct_change(60)
+
+                # 波动率
+                ret = close.pct_change()
+                df['volatility'] = ret.rolling(20, min_periods=5).std()
+
+                # 股票信息
+                info = db.get_stock_info(ts_code)
+                pe = info.get('pe', 0) or 0 if info else 0
+                pb = info.get('pb', 0) or 0 if info else 0
+                name = info.get('name', code) if info else code
+                industry = info.get('industry', '') if info else ''
+
+                for _, row in df.iterrows():
+                    date_str = str(row['trade_date']).replace('-', '')[:8]
+                    if date_str < start_date:
+                        continue
+                    if date_str not in market_data:
+                        market_data[date_str] = {}
+
+                    market_data[date_str][code] = {
+                        'close': row.get('close', 0) or 0,
+                        'open': row.get('open', 0) or 0,
+                        'high': row.get('high', 0) or 0,
+                        'low': row.get('low', 0) or 0,
+                        'volume': row.get('volume', 0) or 0,
+                        'amount': row.get('amount', 0) or 0,
+                        'turnover': row.get('turnover', 0) or 0,
+                        'pct_chg': row.get('pct_chg', 0) or 0,
+                        'ma5': row.get('ma5'),
+                        'ma10': row.get('ma10'),
+                        'ma20': row.get('ma20'),
+                        'ma60': row.get('ma60'),
+                        'volume_ma20': row.get('volume_ma20'),
+                        'return_1d': row.get('return_1d'),
+                        'return_5d': row.get('return_5d'),
+                        'return_20d': row.get('return_20d'),
+                        'return_60d': row.get('return_60d'),
+                        'volatility': row.get('volatility'),
+                        'pe': pe, 'pb': pb,
+                        'ep': 1/pe if pe and pe > 0 else 0,
+                        'roe': 0,
+                        'name': name,
+                        'industry': industry,
+                    }
+            except Exception as e:
+                print(f"[实盘] {code} 历史数据加载失败: {e}")
+                continue
+
+        db.close()
         return market_data
 
     def _get_stock_info(self, ts_code: str) -> dict:
