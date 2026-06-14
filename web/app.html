@@ -281,6 +281,54 @@
             border-radius: 4px;
             font-size: 0.68rem;
         }
+
+        /* ---- Toggle Switch ---- */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 22px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: var(--border);
+            border-radius: 22px;
+            transition: 0.25s;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 3px;
+            bottom: 3px;
+            background: var(--text-dim);
+            border-radius: 50%;
+            transition: 0.25s;
+        }
+        .toggle-switch input:checked + .toggle-slider {
+            background: #166534;
+        }
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(22px);
+            background: var(--green);
+        }
+
+        /* ---- Filter bar ---- */
+        .filter-bar {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+        }
     </style>
 </head>
 <body>
@@ -306,6 +354,7 @@
         <button onclick="switchTab('signals', this)">✅ 信号确认</button>
         <button onclick="switchTab('backtest', this)">📈 回测</button>
         <button onclick="switchTab('strategies', this)">⚙️ 策略配置</button>
+        <button onclick="switchTab('history', this)">📋 日志中心</button>
         <button onclick="switchTab('logs', this)">📋 数据概览</button>
     </nav>
 
@@ -342,7 +391,7 @@
                 <div style="overflow-x:auto">
                     <table>
                         <thead><tr>
-                            <th>订单ID</th><th>代码</th><th>方向</th><th>价格</th><th>数量</th><th>时间</th><th>原因</th><th>操作</th>
+                            <th>时间</th><th>策略</th><th>方向</th><th>代码</th><th>名称</th><th>价格</th><th>数量</th><th>金额</th><th>操作</th>
                         </tr></thead>
                         <tbody id="signals-table"></tbody>
                     </table>
@@ -481,8 +530,8 @@
                 <div class="card-header"><span class="icon">🎯</span>已注册策略</div>
                 <div class="strategy-grid" id="strategy-grid"></div>
                 <div style="margin-top:12px; display:flex; gap:8px;">
-                    <button class="btn btn-blue" onclick="applyCustomStrategies()">✅ 应用选中策略</button>
-                    <span style="font-size:0.78rem;color:var(--text-dim);align-self:center;" id="custom-strat-hint">勾选后点击应用即可自定义策略组合</span>
+                    <button class="btn btn-blue" onclick="activateStrategies()">✅ 激活选中策略</button>
+                    <span style="font-size:0.78rem;color:var(--text-dim);align-self:center;" id="custom-strat-hint">勾选后点击激活即可自定义策略组合并锁定</span>
                 </div>
             </div>
             <div class="card">
@@ -511,6 +560,56 @@
                 <div class="metrics" id="data-metrics"></div>
             </div>
         </div>
+
+        <!-- ============ HISTORY / LOG CENTER ============ -->
+        <div class="tab-panel" id="panel-history">
+            <div class="card">
+                <div class="card-header">
+                    <span><span class="icon">📋</span>信号历史 / 订单记录</span>
+                    <div style="display:flex;gap:8px;">
+                        <select id="hist-filter-type" onchange="loadHistory()" style="font-size:0.8rem;">
+                            <option value="all">全部类型</option>
+                            <option value="PENDING">待确认</option>
+                            <option value="FILLED">已成交</option>
+                            <option value="REJECTED">已拒绝</option>
+                        </select>
+                        <button class="btn btn-sm btn-outline" onclick="loadHistory()">🔄 刷新</button>
+                    </div>
+                </div>
+                <div style="overflow-x:auto">
+                    <table>
+                        <thead><tr>
+                            <th>订单ID</th><th>代码</th><th>方向</th><th>价格</th><th>数量</th><th>状态</th><th>时间</th><th>原因</th>
+                        </tr></thead>
+                        <tbody id="history-table"></tbody>
+                    </table>
+                </div>
+                <div id="history-empty" class="empty" style="display:none">
+                    <div class="icon">📭</div>
+                    <div>暂无历史记录</div>
+                </div>
+            </div>
+
+            <div class="card" id="bus-history-card">
+                <div class="card-header">
+                    <span><span class="icon">🚌</span>SignalBus 信号历史</span>
+                    <span style="font-size:0.78rem;color:var(--text-dim);" id="bus-history-count"></span>
+                </div>
+                <div style="overflow-x:auto">
+                    <table>
+                        <thead><tr>
+                            <th>时间</th><th>策略</th><th>代码</th><th>方向</th><th>强度</th><th>状态</th>
+                        </tr></thead>
+                        <tbody id="bus-history-table"></tbody>
+                    </table>
+                </div>
+                <div id="bus-history-empty" class="empty" style="display:none">
+                    <div class="icon">📭</div>
+                    <div>暂无SignalBus历史</div>
+                </div>
+            </div>
+        </div>
+
     </div>
 
 <script>
@@ -556,6 +655,9 @@ function switchTab(tabName, btn) {
         startSignalAutoRefresh();
     } else if (tabName === 'strategies') {
         loadStrategies();
+        stopSignalAutoRefresh();
+    } else if (tabName === 'history') {
+        loadHistory();
         stopSignalAutoRefresh();
     } else if (tabName === 'logs') {
         loadDataStatus();
@@ -690,14 +792,18 @@ function renderSignals(signals) {
     tbody.innerHTML = signals.map(s => {
         const sideClass = (s.side || '').toUpperCase() === 'BUY' ? 'badge-buy' : 'badge-sell';
         const sideLabel = (s.side || '').toUpperCase() === 'BUY' ? '买入' : '卖出';
+        const amount = (s.price || 0) * (s.quantity || 0);
+        const strategy = s.strategy || s.reason || '';
+        const stockName = s.name || s.ts_code || '';
         return `<tr>
-            <td style="font-family:monospace;font-size:0.78rem;">${esc(s.order_id)}</td>
-            <td>${esc(s.ts_code)}</td>
+            <td style="font-size:0.78rem;">${esc(s.create_time)}</td>
+            <td style="font-size:0.78rem;max-width:100px;overflow:hidden;text-overflow:ellipsis;" title="${esc(strategy)}">${esc(strategy)}</td>
             <td><span class="badge ${sideClass}">${sideLabel}</span></td>
+            <td>${esc(s.ts_code)}</td>
+            <td>${esc(stockName)}</td>
             <td>${fmtPrice(s.price)}</td>
             <td>${fmtQty(s.quantity)}</td>
-            <td style="font-size:0.78rem;">${esc(s.create_time)}</td>
-            <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;" title="${esc(s.reason)}">${esc(s.reason)}</td>
+            <td>${fmtMoney(amount)}</td>
             <td>
                 <button class="btn btn-sm btn-green" onclick="confirmSignal('${esc(s.order_id)}', ${s.price}, ${s.quantity})">确认</button>
                 <button class="btn btn-sm btn-red" onclick="rejectSignal('${esc(s.order_id)}')">拒绝</button>
@@ -769,7 +875,7 @@ async function submitFill() {
 
 function startSignalAutoRefresh() {
     stopSignalAutoRefresh();
-    signalAutoRefreshTimer = setInterval(loadSignals, 15000); // 15s
+    signalAutoRefreshTimer = setInterval(loadSignals, 30000); // 30s
 }
 
 function stopSignalAutoRefresh() {
@@ -1178,18 +1284,95 @@ function btRenderStrategyCards() {
     };
     let html = '';
     for (const [k,v] of Object.entries(strategies)) {
-        const sel = btCurrentStrategy === k ? 'selected' : '';
-        html += '<div class="profile-card strat-card-selectable '+sel+'" onclick="btSelectStrategy(\''+k+'\')" id="bt-strat-'+k+'" style="cursor:pointer;"><div class="name">'+v+'</div></div>';
+        const checked = btCurrentStrategy === k || (Array.isArray(btCurrentStrategy) && btCurrentStrategy.includes(k)) ? 'checked' : '';
+        html += `<div class="profile-card strat-card-selectable" id="bt-strat-${k}" style="cursor:pointer;" onclick="btToggleStratCheck('${k}')">
+            <div style="display:flex;align-items:center;gap:10px;">
+                <input type="checkbox" class="bt-strat-checkbox" data-key="${k}" ${checked} style="accent-color:var(--blue);cursor:pointer;" onclick="event.stopPropagation();btToggleStratCheck('${k}')">
+                <div class="name">${v}</div>
+            </div>
+        </div>`;
     }
-    html += '<div class="profile-card strat-card-selectable '+(btCurrentStrategy==='both'?'selected':'')+'" onclick="btSelectStrategy(\'both\')" id="bt-strat-both" style="cursor:pointer;"><div class="name">对比: 8因子 + 位置判断</div></div>';
+    html += `<div class="profile-card strat-card-selectable" id="bt-strat-both" style="cursor:pointer;" onclick="btSelectBoth()">
+        <div style="display:flex;align-items:center;gap:10px;">
+            <input type="checkbox" class="bt-strat-checkbox" data-key="both" ${btCurrentStrategy === 'both' ? 'checked' : ''} style="accent-color:var(--yellow);cursor:pointer;" onclick="event.stopPropagation();btSelectBoth()">
+            <div class="name" style="color:var(--yellow);">对比模式: 全部勾选策略叠加</div>
+        </div>
+    </div>`;
+    html += '<div style="font-size:0.72rem;color:var(--text-dim);margin-top:6px;">勾选一个策略=单策略回测，勾选多个=叠加对比净值曲线</div>';
     document.getElementById('bt-strategy-cards').innerHTML = html;
 }
 
+function btToggleStratCheck(key) {
+    const card = document.getElementById('bt-strat-' + key);
+    const checkbox = card ? card.querySelector('.bt-strat-checkbox') : null;
+    if (!checkbox) return;
+
+    // Toggle this checkbox
+    checkbox.checked = !checkbox.checked;
+    if (checkbox.checked) {
+        card.style.borderColor = 'var(--blue)';
+        card.style.background = '#1e3a5f';
+    } else {
+        card.style.borderColor = '';
+        card.style.background = '';
+    }
+
+    // Update border/background for all checked cards
+    document.querySelectorAll('#bt-strategy-cards .bt-strat-checkbox:checked').forEach(cb => {
+        const parent = cb.closest('.profile-card');
+        if (parent) { parent.style.borderColor = 'var(--blue)'; parent.style.background = '#1e3a5f'; }
+    });
+    document.querySelectorAll('#bt-strategy-cards .bt-strat-checkbox:not(:checked)').forEach(cb => {
+        const parent = cb.closest('.profile-card');
+        if (parent && !parent.querySelector('.bt-strat-checkbox[data-key="both"]')) {
+            parent.style.borderColor = ''; parent.style.background = '';
+        }
+    });
+
+    // Update btCurrentStrategy
+    const checkedBoxes = document.querySelectorAll('#bt-strategy-cards .bt-strat-checkbox:checked:not([data-key="both"])');
+    const checkedKeys = Array.from(checkedBoxes).map(cb => cb.getAttribute('data-key'));
+    if (checkedKeys.length === 0) {
+        btCurrentStrategy = 'eight_factor'; // default
+    } else if (checkedKeys.length === 1) {
+        btCurrentStrategy = checkedKeys[0];
+    } else {
+        btCurrentStrategy = checkedKeys; // array for multi-strategy
+    }
+
+    // Uncheck 'both' if we're manually selecting
+    const bothCb = document.querySelector('#bt-strategy-cards .bt-strat-checkbox[data-key="both"]');
+    if (bothCb) bothCb.checked = false;
+}
+
+function btSelectBoth() {
+    const bothCb = document.querySelector('#bt-strategy-cards .bt-strat-checkbox[data-key="both"]');
+    // Toggle both
+    if (bothCb) bothCb.checked = !bothCb.checked;
+    if (bothCb && bothCb.checked) {
+        btCurrentStrategy = 'both';
+        // Uncheck all individual checkboxes
+        document.querySelectorAll('#bt-strategy-cards .bt-strat-checkbox:not([data-key="both"])').forEach(cb => { cb.checked = false; });
+        document.querySelectorAll('#bt-strategy-cards .profile-card').forEach(c => { c.style.borderColor = ''; c.style.background = ''; });
+        const bothCard = document.getElementById('bt-strat-both');
+        if (bothCard) { bothCard.style.borderColor = 'var(--yellow)'; bothCard.style.background = '#422006'; }
+    } else {
+        btCurrentStrategy = 'eight_factor';
+        document.getElementById('bt-strat-eight_factor')?.querySelector('.bt-strat-checkbox')?.setAttribute('checked', '');
+    }
+}
+
 function btSelectStrategy(key) {
+    // Legacy single-select: uncheck all, check only this one
+    document.querySelectorAll('#bt-strategy-cards .bt-strat-checkbox').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('#bt-strategy-cards .profile-card').forEach(c => { c.style.borderColor = ''; c.style.background = ''; });
+    const card = document.getElementById('bt-strat-' + key);
+    const checkbox = card ? card.querySelector('.bt-strat-checkbox') : null;
+    if (checkbox) {
+        checkbox.checked = true;
+        if (card) { card.style.borderColor = 'var(--blue)'; card.style.background = '#1e3a5f'; }
+    }
     btCurrentStrategy = key;
-    document.querySelectorAll('#bt-strategy-cards .profile-card').forEach(c => c.classList.remove('selected'));
-    const card = document.getElementById('bt-strat-'+key);
-    if (card) card.classList.add('selected');
 }
 
 // ============================================================
@@ -1203,6 +1386,12 @@ async function runBacktest() {
     const stopLoss = parseFloat(document.getElementById('bt-stoploss').value) / 100;
     const moveStop = parseFloat(document.getElementById('bt-movestop').value) / 100;
 
+    // Collect selected strategies from checkboxes (B4: multi-strategy support)
+    let strategyType = btCurrentStrategy;
+    if (Array.isArray(btCurrentStrategy) && btCurrentStrategy.length > 1) {
+        strategyType = btCurrentStrategy.join(',');
+    }
+
     document.getElementById('bt-loading-card').style.display = 'block';
     document.getElementById('bt-metrics-area').innerHTML = '';
     document.getElementById('bt-chart-card').style.display = 'none';
@@ -1215,7 +1404,7 @@ async function runBacktest() {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 stock_pool: btStockPool, start_date: startDate, end_date: endDate,
-                strategy_type: btCurrentStrategy,
+                strategy_type: strategyType,
                 initial_capital: parseFloat(document.getElementById('bt-capital').value) || 100000,
                 max_position: parseInt(document.getElementById('bt-maxpos').value) || 5,
                 stop_loss: stopLoss, move_stop: moveStop,
@@ -1437,6 +1626,130 @@ async function btLoadDailyOps() {
 
         document.getElementById('bt-daily-ops').innerHTML = html;
     } catch(e) { document.getElementById('bt-daily-ops').innerHTML = '<div style="color:var(--red);">加载失败</div>'; }
+}
+
+// ============================================================
+// History / Log Center
+// ============================================================
+
+async function loadHistory() {
+    const filterType = document.getElementById('hist-filter-type').value;
+    try {
+        const resp = await fetch(API_BASE + '/signals/history?limit=200');
+        const json = await resp.json();
+        if (json.status !== 'success') {
+            document.getElementById('history-table').innerHTML = '';
+            document.getElementById('history-empty').style.display = 'block';
+            document.getElementById('history-empty').innerHTML = '<div class="icon">⚠️</div><div>' + (json.message || '加载失败') + '</div>';
+            return;
+        }
+        renderHistory(json.data, filterType);
+    } catch (err) {
+        document.getElementById('history-table').innerHTML = '';
+        document.getElementById('history-empty').style.display = 'block';
+        document.getElementById('history-empty').innerHTML = '<div class="icon">❌</div><div>请求失败: ' + err.message + '</div>';
+    }
+}
+
+function renderHistory(data, filterType) {
+    const brokerOrders = data.broker_orders || [];
+    const busHistory = data.bus_history || [];
+
+    // Render broker orders
+    const tbody = document.getElementById('history-table');
+    const emptyDiv = document.getElementById('history-empty');
+
+    let filteredOrders = brokerOrders;
+    if (filterType && filterType !== 'all') {
+        filteredOrders = brokerOrders.filter(o => (o.status || '').toUpperCase() === filterType.toUpperCase());
+    }
+
+    if (filteredOrders.length === 0) {
+        tbody.innerHTML = '';
+        emptyDiv.style.display = 'block';
+    } else {
+        emptyDiv.style.display = 'none';
+        tbody.innerHTML = filteredOrders.map(o => {
+            const sideClass = (o.side || '').toUpperCase() === 'BUY' ? 'badge-buy' : 'badge-sell';
+            const sideLabel = (o.side || '').toUpperCase() === 'BUY' ? '买入' : '卖出';
+            const statusClass = (o.status || '').toUpperCase() === 'FILLED' ? 'text-green' :
+                                (o.status || '').toUpperCase() === 'REJECTED' ? 'text-red' : 'text-yellow';
+            return `<tr>
+                <td style="font-family:monospace;font-size:0.75rem;">${esc(o.order_id)}</td>
+                <td>${esc(o.ts_code)}</td>
+                <td><span class="badge ${sideClass}">${sideLabel}</span></td>
+                <td>${fmtPrice(o.price)}</td>
+                <td>${fmtQty(o.quantity)}</td>
+                <td class="${statusClass}">${esc(o.status)}</td>
+                <td style="font-size:0.78rem;">${esc(o.create_time)}</td>
+                <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${esc(o.reason)}">${esc(o.reason)}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    // Render bus history
+    const busTbody = document.getElementById('bus-history-table');
+    const busEmpty = document.getElementById('bus-history-empty');
+    const busCount = document.getElementById('bus-history-count');
+
+    if (!busHistory || busHistory.length === 0) {
+        busTbody.innerHTML = '';
+        busEmpty.style.display = 'block';
+        busCount.textContent = '0条记录';
+    } else {
+        busEmpty.style.display = 'none';
+        busCount.textContent = busHistory.length + '条记录';
+        busTbody.innerHTML = busHistory.map(b => {
+            const sideClass = (b.side || b.direction || '').toUpperCase() === 'BUY' ? 'badge-buy' : 'badge-sell';
+            const sideLabel = (b.side || b.direction || '').toUpperCase() === 'BUY' ? '买入' : '卖出';
+            const status = b.status || b.state || '';
+            const statusClass = status === 'sent' ? 'text-green' : status === 'rejected' ? 'text-red' : 'text-yellow';
+            return `<tr>
+                <td style="font-size:0.78rem;">${esc(b.timestamp || b.time || '')}</td>
+                <td>${esc(b.strategy || '')}</td>
+                <td>${esc(b.ts_code || b.code || '')}</td>
+                <td><span class="badge ${sideClass}">${sideLabel}</span></td>
+                <td>${esc(b.strength || b.score || '')}</td>
+                <td class="${statusClass}">${esc(status)}</td>
+            </tr>`;
+        }).join('');
+    }
+}
+
+// ============================================================
+// Strategy Activation (Toggle switches)
+// ============================================================
+
+async function activateStrategies() {
+    const checkboxes = document.querySelectorAll('.strat-checkbox:checked');
+    const strategies = [];
+    checkboxes.forEach(cb => { strategies.push(cb.getAttribute('data-key')); });
+    if (strategies.length === 0) {
+        showToast('请至少勾选一个策略', 'error');
+        return;
+    }
+    try {
+        const resp = await fetch(API_BASE + '/strategies/activate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                strategies: strategies,
+                active: true,
+                position_ratio: 0.60,
+                stop_loss: -0.08
+            })
+        });
+        const json = await resp.json();
+        if (json.status === 'success') {
+            showToast(json.data.message || '策略已激活', 'success');
+            document.getElementById('custom-strat-hint').textContent = '当前激活: ' + strategies.length + '个策略';
+            loadStrategies();
+        } else {
+            showToast('激活失败: ' + (json.detail || json.message || '未知错误'), 'error');
+        }
+    } catch (err) {
+        showToast('请求失败: ' + err.message, 'error');
+    }
 }
 
 // ============================================================

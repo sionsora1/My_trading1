@@ -152,6 +152,45 @@ class BacktestEngine:
         self.order_counter = 0
         self.current_date = ''
 
+    @classmethod
+    def from_sqlite(cls, db, stock_pool: list,
+                    start_date: str, end_date: str,
+                    config: 'BacktestConfig' = None):
+        """
+        从 SQLite 加载数据并创建回测引擎
+
+        Args:
+            db: SQLiteManager 实例
+            stock_pool: 股票代码列表 (e.g. ['600519', '000858'])
+            start_date: 开始日期 YYYYMMDD
+            end_date: 结束日期 YYYYMMDD
+            config: 回测配置
+
+        Returns:
+            BacktestEngine instance with market_data loaded
+        """
+        from data.calendar import TradeCalendar
+        cal = TradeCalendar(db)
+        trade_dates = cal.get_trade_dates(start_date, end_date)
+
+        market_data = {}
+        for d in trade_dates:
+            day_data = {}
+            for code in stock_pool:
+                # Try both with and without exchange suffix
+                ts_code = f"{code}.SH" if str(code).startswith('6') else f"{code}.SZ"
+                bars = db.get_daily_bars(ts_code, d, d)
+                if not bars:
+                    bars = db.get_daily_bars(code, d, d)  # try without suffix
+                if bars:
+                    day_data[code] = bars[0]
+            if day_data:
+                market_data[d] = day_data
+
+        engine = cls(config)
+        engine._market_data = market_data
+        return engine
+
     def reset(self):
         """重置回测状态"""
         self.cash = self.config.initial_capital

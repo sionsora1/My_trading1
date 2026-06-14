@@ -44,6 +44,7 @@ class LiveTradingServer:
         self._init_risk_manager()
         self._init_notifier()
         self._init_data()
+        self._init_signal_bus()
 
         # 状态
         self.running = False
@@ -100,6 +101,53 @@ class LiveTradingServer:
         self.fetcher = DataFetcher()
         self.cache = DataCache()
         self.data_cache_ttl = 300  # 行情数据缓存5分钟
+
+    def _init_signal_bus(self):
+        """初始化信号总线"""
+        from sigbus.bus import SignalBus
+        from config.strategy_profiles import SIGNAL_BUS_CONFIG
+        self.signal_bus = SignalBus(SIGNAL_BUS_CONFIG)
+
+    def _get_active_strategies(self, regime=None):
+        """根据市场环境获取当前应激活的策略实例列表"""
+        from config.strategy_profiles import get_profile_for_regime, get_active_profile
+        from strategy import get_strategy as _get_strat
+
+        if regime is not None:
+            profile = get_profile_for_regime(regime)
+        else:
+            profile = get_active_profile()
+
+        strategies = []
+        for name in profile['strategies']:
+            try:
+                s = _get_strat(name)
+                strategies.append(s)
+            except Exception as e:
+                print(f"[LiveServer] 策略 {name} 加载失败: {e}")
+
+        return strategies, profile
+
+    def _detect_market_regime(self, market_data, latest_date):
+        """检测市场环境（基于指数走势和波动率）"""
+        try:
+            if not market_data or latest_date not in market_data:
+                return None
+            latest = market_data[latest_date]
+            # 使用代表性指数判断市场环境
+            index_codes = ['000300', '510300', '510050']
+            for idx in index_codes:
+                if idx in latest:
+                    idx_data = latest[idx]
+                    ret_20d = idx_data.get('return_20d') or 0
+                    if ret_20d > 0.03:
+                        return 'bull'
+                    elif ret_20d < -0.03:
+                        return 'bear'
+                    return 'neutral'
+            return None
+        except Exception:
+            return None
 
     # ============================================================
     # 状态查询
@@ -520,98 +568,40 @@ class LiveTradingServer:
             }
 
             # ============================================================
-            # v2.0: SignalBus integration — use profile-driven strategies
+            # v2.0: SignalBus 多策略信号总线（主要路径）
             # ============================================================
-            _signal_bus_signals = []
-            try:
-                from server import signal_bus as _sb, manual_broker as _mb
-                from config.strategy_profiles import get_active_profile
-                from strategy import get_strategy as _get_strat
 
-                # Load active strategy profile
-                _profile = get_active_profile()
-                _profile_strategy_names = _profile.get('strategies', [strategy_name] if strategy_name != 'all' else list(STRATEGY_REGISTRY.keys()))
-                _profile_strategies = [_get_strat(s) for s in _profile_strategy_names if s in STRATEGY_REGISTRY]
+            # 2. 市场环境检测 & 策略选择
+            regime = self._detect_market_regime(market_data, latest_date)
+            active_strategies, active_profile = self._get_active_strategies(regime)
 
-                if _profile_strategies:
-                    # Route signals through SignalBus
-                    _bus_results = _sb.process(
-                        date=latest_date,
-                        market_data=latest_data,
-                        portfolio=portfolio,
-                        strategies=_profile_strategies,
-                        risk_manager=self.risk_manager,
-                    )
+            signal_bus_signals = []
+            if active_strategies:
+                # 通过 SignalBus 生成信号（含去重、风控过滤、权重排序）
+                bus_results = self.signal_bus.process(
+                    date=latest_date,
+                    market_data=latest_data,
+                    portfolio=portfolio,
+                    strategies=active_strategies,
+                    risk_manager=self.risk_manager,
+                )
 
-                    if _bus_results:
-                        for _sig in _bus_results:
-                            _stock_info = latest_data.get(_sig['ts_code'], {})
-                            _signal_obj = Signal(
-                                ts_code=_sig['ts_code'],
-                                name=_stock_info.get('name', _sig['ts_code']),
-                                signal=_sig['signal'],
-                                weight=_sig.get('weight', 0),
-                                reason=_sig.get('reason', ''),
-                                price=_sig.get('price', _stock_info.get('close', 0)),
-                                strategy=_sig.get('strategy', 'signal_bus'),
-                            )
-                            _signal_bus_signals.append(_signal_obj)
+                if bus_results:
+                    for sig in bus_results:
+                        stock_info = latest_data.get(sig['ts_code'], {})
+                        signal_obj = Signal(
+                            ts_code=sig['ts_code'],
+                            name=stock_info.get('name', sig['ts_code']),
+                            signal=sig['signal'],
+                            weight=sig.get('weight', 0),
+                            reason=sig.get('reason', ''),
+                            price=sig.get('price', stock_info.get('close', 0)),
+                            strategy=sig.get('strategy', 'signal_bus'),
+                        )
+                        signal_bus_signals.append(signal_obj)
 
-                        # If manual broker mode, submit signals for web confirmation
-                        if self.broker_name == 'manual':
-                            for _sig in _bus_results:
-                                try:
-                                    _mb.submit_order(
-                                        ts_code=_sig['ts_code'],
-                                        side=_sig['signal'],
-                                        quantity=_sig.get('suggest_qty', 100),
-                                        price=_sig.get('price', 0),
-                                        reason=f"[{_sig.get('strategy', 'signal_bus')}] {_sig.get('reason', '')}",
-                                    )
-                                except Exception as _e:
-                                    print(f"[实盘] ManualBroker submit failed for {_sig['ts_code']}: {_e}")
-            except Exception as _e:
-                print(f"[实盘] SignalBus integration skipped (degrading gracefully): {_e}")
-
-            # 2. 确定要运行的策略列表
-            if strategy_name == 'all':
-                strategies_to_run = list(STRATEGY_REGISTRY.keys())
-            elif strategy_name in STRATEGY_REGISTRY:
-                strategies_to_run = [strategy_name]
-            else:
-                strategies_to_run = ['eight_factor']
-
-            # 3. 依次运行每个策略，汇总所有信号（v2.0: skip if SignalBus already provided signals）
-            if _signal_bus_signals:
-                all_filtered_signals = _signal_bus_signals
-                all_trades = []
-            else:
-                all_filtered_signals = []
-                all_trades = []
-
-                for s_name in strategies_to_run:
-                    try:
-                        strategy = get_strategy(s_name)
-                        signals = strategy.generate_signals(latest_date, latest_data, portfolio)
-
-                        # 风控过滤
-                        for sig in signals:
-                            stock_info = latest_data.get(sig['ts_code'], {})
-                            signal_obj = Signal(
-                                ts_code=sig['ts_code'],
-                                name=stock_info.get('name', sig['ts_code']),
-                                signal=sig['signal'],
-                                weight=sig.get('weight', 0),
-                                reason=sig.get('reason', ''),
-                                price=stock_info.get('close', 0),
-                                strategy=s_name,
-                            )
-
-                            check = self.risk_manager.check_signal(signal_obj, account, positions, stock_info)
-                            if check.passed:
-                                all_filtered_signals.append(signal_obj)
-                    except Exception as e:
-                        print(f"[实盘] 策略 {s_name} 执行失败: {e}")
+            all_filtered_signals = signal_bus_signals
+            all_trades = []
 
             # 4. 去重：同一股票如果多个策略都有信号，取置信度最高的
             seen_buy = set()
@@ -740,7 +730,7 @@ class LiveTradingServer:
             return {
                 'status': 'success',
                 'scan_time': self.last_scan_time,
-                'strategies_used': strategies_to_run,
+                'strategies_used': active_profile.get('strategies', [strategy_name]) if active_strategies else [strategy_name],
                 'signals': [
                     {'ts_code': s.ts_code, 'name': s.name, 'signal': s.signal,
                      'strategy': s.strategy, 'reason': s.reason,

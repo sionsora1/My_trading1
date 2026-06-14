@@ -114,6 +114,11 @@ LIVE_TRADING_CONFIG = {
     # 交易模式: 'auto' (全自动) / 'semi' (半自动，需确认信号)
     'mode': 'semi',
 
+    # v2.0: 信号总线模式
+    'signal_mode': 'bus',  # 'bus' = 使用 SignalBus 多策略, 'single' = 单策略(兼容旧模式)
+    # 市场环境自适应
+    'auto_regime': True,   # True = 自动检测并切换策略组合
+
     # 模拟盘配置
     'sim': {
         'initial_capital': 100_000,          # 初始资金10万

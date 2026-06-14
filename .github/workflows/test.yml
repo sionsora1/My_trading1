@@ -1,0 +1,117 @@
+# GitHub Actions CI — Tests with ≥70% coverage requirement
+name: Tests (≥70% coverage required)
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  schedule:
+    # Every trading day at 15:30 Beijing time (07:30 UTC)
+    - cron: '30 7 * * 1-5'
+
+jobs:
+  unit-and-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r quant_strategy/requirements.txt
+          pip install pytest pytest-cov pytest-xdist pytest-timeout
+
+      - name: Cache AKShare data (system temp)
+        uses: actions/cache@v4
+        with:
+          path: /tmp/quant_test_cache/
+          key: akshare-test-data-${{ runner.os }}-${{ hashFiles('quant_strategy/data_cache/live_stock_pool.json') }}
+          restore-keys: akshare-test-data-${{ runner.os }}-
+
+      - name: Run unit tests (fast)
+        run: |
+          cd quant_strategy
+          pytest tests/unit/ -v --tb=short --timeout=120 \
+            -m "not slow" \
+            --cov=. --cov-report=term --cov-report=html:reports/coverage \
+            --junitxml=reports/unit-results.xml
+
+      - name: Run integration tests (slow, may skip)
+        run: |
+          cd quant_strategy
+          pytest tests/integration/ -v --tb=short --timeout=300 \
+            -m "slow or real_data" \
+            --cov=. --cov-append --cov-report=html:reports/coverage \
+            --junitxml=reports/integration-results.xml
+        continue-on-error: false
+
+      - name: Check coverage threshold
+        run: |
+          cd quant_strategy
+          coverage_threshold=70
+          actual=$(grep -oP '<span class="pc_cov">\K\d+' reports/coverage/index.html | head -1)
+          if [ "$actual" -lt "$coverage_threshold" ]; then
+            echo "::error::Coverage ${actual}% < ${coverage_threshold}% threshold"
+            exit 1
+          fi
+          echo "::notice::Coverage ${actual}% meets >=${coverage_threshold}% threshold"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: quant_strategy/reports/coverage/
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: quant_strategy/reports/*.xml
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: unit-and-integration
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r quant_strategy/requirements.txt
+          pip install playwright pytest pytest-timeout
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run E2E tests (server auto-started by conftest.py)
+        run: |
+          cd quant_strategy
+          pytest tests/e2e/ -v --tb=short --timeout=120 \
+            -m e2e \
+            --junitxml=reports/e2e-results.xml
+        env:
+          HEADLESS: "true"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: quant_strategy/reports/*.png

@@ -51,3 +51,11 @@ reasonix.toml
 .vscode/
 *.swp
 *.swo
+
+# Test artifacts
+.coverage
+htmlcov/
+reports/
+e2e_*.png
+.pytest_cache/
+

@@ -1,0 +1,5 @@
+pytest>=8.0
+pytest-cov>=5.0        # Coverage reporting
+pytest-xdist>=3.0      # Parallel execution
+pytest-timeout>=2.0    # Timeout control for network requests
+playwright>=1.40

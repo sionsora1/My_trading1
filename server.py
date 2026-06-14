@@ -32,7 +32,7 @@ BASE_DIR = Path(__file__).parent
 
 
 # ============================================================
-# v2.0 Module Initialization
+# v2.0 Module Initialization Helpers
 # ============================================================
 
 from data.database import SQLiteManager
@@ -42,25 +42,181 @@ from broker.manual_broker import ManualBroker
 from config.strategy_profiles import SIGNAL_BUS_CONFIG
 from config.settings import LIVE_TRADING_CONFIG, DATA_CACHE_DIR
 
+
+def check_and_init_data(db, calendar, fetcher):
+    """
+    检查数据状态，必要时进行初始化
+    Returns: dict with status for each data type
+    """
+    status = {}
+
+    # 1. 交易日历
+    try:
+        cal_count = db.calendar_row_count()
+        if cal_count == 0:
+            print("[Init] 正在加载交易日历...")
+            calendar.sync_to_db()
+            status['calendar'] = 'synced'
+        else:
+            status['calendar'] = f'ok ({cal_count} days)'
+    except Exception as e:
+        status['calendar'] = f'error: {e}'
+
+    # 2. 日线数据
+    try:
+        daily_count = db._conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
+        if daily_count == 0:
+            print("[Init] 日线数据为空 — 从 JSON cache 同步...")
+            sync_result = db.sync_from_cache()
+            status['daily_bars'] = f"synced {sync_result['daily_bars']} rows"
+        else:
+            status['daily_bars'] = f'ok ({daily_count} rows)'
+    except Exception as e:
+        status['daily_bars'] = f'error: {e}'
+
+    # 3. 股票信息
+    try:
+        stock_count = db._conn.execute("SELECT COUNT(*) FROM stock_info").fetchone()[0]
+        if stock_count == 0:
+            print("[Init] 正在获取股票基本信息...")
+            try:
+                df = fetcher.get_stock_list()
+                if df is not None and not df.empty:
+                    rows = []
+                    for _, r in df.iterrows():
+                        code = str(r.get('symbol', r.get('code', ''))).strip()
+                        name = str(r.get('name', '')).strip()
+                        if code and len(code) == 6:
+                            # Determine exchange suffix
+                            ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+                            rows.append({'ts_code': ts_code, 'name': name, 'code': code})
+                    if rows:
+                        db.upsert_stock_info(rows)
+                        status['stock_info'] = f'synced {len(rows)} stocks'
+                    else:
+                        status['stock_info'] = 'no data from fetcher'
+                else:
+                    status['stock_info'] = 'fetcher returned empty'
+            except Exception as e:
+                status['stock_info'] = f'fetcher error: {e}'
+        else:
+            status['stock_info'] = f'ok ({stock_count} stocks)'
+    except Exception as e:
+        status['stock_info'] = f'error: {e}'
+
+    return status
+
+
+async def market_scheduler(live_server, db, fetcher, calendar):
+    """交易时段调度器（后台异步任务）"""
+    from datetime import datetime, time
+    from data.validator import DataValidator
+    import asyncio
+
+    while True:
+        try:
+            now = datetime.now()
+            today_str = now.strftime('%Y%m%d')
+            current_time = now.time()
+
+            # Check if trade day
+            is_trade_day = True
+            try:
+                is_trade_day = calendar.is_trade_day(today_str)
+            except Exception:
+                pass  # If calendar check fails, assume trade day
+
+            if not is_trade_day:
+                await asyncio.sleep(300)  # Sleep 5 min on non-trade days
+                continue
+
+            # --- 09:25 盘前准备 ---
+            if time(9, 25) <= current_time < time(9, 30):
+                print("[Scheduler] 盘前准备...")
+                try:
+                    stock_pool = live_server.config.get('scan', {}).get('stock_pool', [])
+                    if stock_pool:
+                        # Fetch minute bars for pre-market analysis
+                        fetcher.fetch_and_store_minute_bars(stock_pool, db, period='5')
+                    live_server.update_market_prices()
+                except Exception as e:
+                    print(f"[Scheduler] 盘前准备失败: {e}")
+                await asyncio.sleep(60)
+
+            # --- 09:30-15:00 盘中扫描 ---
+            elif time(9, 30) <= current_time < time(15, 0):
+                try:
+                    await asyncio.to_thread(live_server.scan_and_trade)
+                except Exception as e:
+                    print(f"[Scheduler] 盘中扫描失败: {e}")
+                await asyncio.sleep(60)
+
+            # --- 15:00-15:30 收盘处理 ---
+            elif time(15, 0) <= current_time < time(15, 30):
+                print("[Scheduler] 收盘处理...")
+                try:
+                    stock_pool = live_server.config.get('scan', {}).get('stock_pool', [])
+                    if stock_pool:
+                        df = fetcher.get_daily_data_batch(stock_pool, today_str, today_str)
+                        if df is not None and not df.empty:
+                            rows = df.to_dict('records')
+                            valid = DataValidator.filter_valid_daily_bars(rows)
+                            if valid:
+                                db.upsert_daily_bars(valid)
+
+                    # Cleanup old minute bars (keep 5 days)
+                    if hasattr(db, 'cleanup_old_minute_bars'):
+                        db.cleanup_old_minute_bars(keep_days=5)
+
+                    # Performance snapshot
+                    try:
+                        acc = live_server.broker.get_account()
+                        positions = live_server.broker.get_positions()
+                        snapshot = {
+                            'date': today_str,
+                            'total_assets': acc.total_assets,
+                            'available_cash': acc.available_cash,
+                            'market_value': acc.market_value,
+                            'positions': {}
+                        }
+                        for code, pos in positions.items():
+                            snapshot['positions'][code] = {
+                                'name': getattr(pos, 'name', code),
+                                'qty': getattr(pos, 'quantity', 0),
+                                'cost': getattr(pos, 'cost_price', 0),
+                            }
+                        if hasattr(db, 'save_account_snapshot'):
+                            db.save_account_snapshot(
+                                acc.total_assets, acc.available_cash,
+                                acc.market_value, snapshot['positions']
+                            )
+                    except Exception as e:
+                        print(f"[Scheduler] 绩效快照失败: {e}")
+
+                except Exception as e:
+                    print(f"[Scheduler] 收盘处理失败: {e}")
+                await asyncio.sleep(300)
+
+            # --- 非交易时段 ---
+            else:
+                await asyncio.sleep(300)
+
+        except Exception as e:
+            print(f"[Scheduler] 调度异常: {e}")
+            await asyncio.sleep(60)
+
+
+# ============================================================
+# v2.0 Module Initialization
+# ============================================================
+
 # Database
 db = SQLiteManager()
 calendar = TradeCalendar(db)
 
-# Sync calendar on first run
-if db.calendar_row_count() == 0:
-    print("[Server] First run — syncing trade calendar...")
-    calendar.sync_to_db()
-
-# Sync market data from cache to SQLite (if DB is empty)
-try:
-    daily_count = db._conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
-    if daily_count == 0:
-        print("[Server] SQLite daily_bars empty — syncing from JSON cache...")
-        sync_counts = db.sync_from_cache()
-        print(f"[Server] Synced: {sync_counts['daily_bars']} daily bars, "
-              f"{sync_counts['stock_info']} stocks from {sync_counts['files']} cache files")
-except Exception as e:
-    print(f"[Server] Data sync skipped: {e}")
+# Run data initialization check
+init_status = check_and_init_data(db, calendar, DataFetcher())
+print(f"[Server] Data status: {init_status}")
 
 # SignalBus
 signal_bus = SignalBus(SIGNAL_BUS_CONFIG)

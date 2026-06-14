@@ -190,6 +190,36 @@ async def get_signal_stats():
         return JSONResponse(content={"status": "error", "message": str(e)})
 
 
+@router.get("/api/signals/history")
+async def get_signal_history(limit: int = 100):
+    """Get signal history (confirmed/rejected/executed)"""
+    broker = _get_manual_broker()
+    if broker is None:
+        return JSONResponse(content={"status": "success", "data": [], "message": "ManualBroker not initialised"})
+    try:
+        all_orders = broker.get_orders_list() if hasattr(broker, 'get_orders_list') else []
+        bus = _get_signal_bus()
+        bus_history = bus.get_signal_history() if bus and hasattr(bus, 'get_signal_history') else []
+        return JSONResponse(content={
+            "status": "success",
+            "data": {
+                "broker_orders": [{
+                    "order_id": getattr(o, 'order_id', ''),
+                    "ts_code": getattr(o, 'ts_code', ''),
+                    "side": getattr(o, 'side', None).value if hasattr(getattr(o, 'side', None), 'value') else str(getattr(o, 'side', '')),
+                    "price": getattr(o, 'price', 0),
+                    "quantity": getattr(o, 'quantity', 0),
+                    "status": getattr(o, 'status', None).value if hasattr(getattr(o, 'status', None), 'value') else str(getattr(o, 'status', '')),
+                    "create_time": str(getattr(o, 'create_time', '')),
+                    "reason": getattr(o, 'reason', ''),
+                } for o in all_orders][:limit],
+                "bus_history": bus_history[:limit] if isinstance(bus_history, list) else [],
+            }
+        })
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)})
+
+
 # ============================================================
 # Strategy Management
 # ============================================================
@@ -291,6 +321,64 @@ async def set_strategy_profile(body: dict):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/strategies/{name}/params")
+async def update_strategy_params(name: str, body: dict):
+    """Update strategy parameters (hot-reload)"""
+    if name not in STRATEGY_REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Strategy '{name}' not found")
+    try:
+        from strategy import get_strategy as _get_strat
+        strategy = _get_strat(name)
+        params = body.get('params', {})
+        if hasattr(strategy, 'update_params'):
+            strategy.update_params(params)
+        if 'metadata' not in STRATEGY_REGISTRY[name]:
+            STRATEGY_REGISTRY[name]['metadata'] = {}
+        STRATEGY_REGISTRY[name]['metadata']['custom_params'] = params
+        return {
+            "status": "success",
+            "data": {
+                "strategy": name,
+                "params": params,
+                "message": f"Strategy '{name}' parameters updated"
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/strategies/activate")
+async def activate_strategies(body: dict):
+    """Activate/deactivate strategies"""
+    strategies = body.get('strategies', [])
+    active = body.get('active', True)
+
+    if not strategies:
+        return {"status": "error", "message": "No strategies specified"}
+
+    valid = [s for s in strategies if s in STRATEGY_REGISTRY]
+    if not valid:
+        return {"status": "error", "message": "No valid strategies"}
+
+    if active:
+        STRATEGY_PROFILES['custom'] = {
+            'name': '自定义组合',
+            'strategies': valid,
+            'position_ratio': body.get('position_ratio', 0.60),
+            'stop_loss': body.get('stop_loss', -0.08),
+        }
+        MANUAL_LOCK['enabled'] = True
+        MANUAL_LOCK['profile'] = 'custom'
+
+    return {
+        "status": "success",
+        "data": {
+            "active_strategies": valid,
+            "message": f"{'Activated' if active else 'Deactivated'} {len(valid)} strategies"
+        }
+    }
 
 
 # ============================================================
