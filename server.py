@@ -321,6 +321,7 @@ class BacktestRequest(BaseModel):
     stop_loss: float = -0.08
     move_stop: float = -0.10
     rebalance_frequency: str = "weekly"
+    strict_mode: bool = False  # 严格模式：基于前一日数据决策，消除前视偏差
 
 class TaskStatus(BaseModel):
     """任务状态"""
@@ -971,7 +972,8 @@ def execute_backtest(task_id: str, request: BacktestRequest):
             max_position_num=request.max_position,
             stop_loss_rate=request.stop_loss,
             move_stop_rate=request.move_stop,
-            rebalance_frequency=request.rebalance_frequency
+            rebalance_frequency=request.rebalance_frequency,
+            strict_mode=request.strict_mode
         )
 
         # 运行策略

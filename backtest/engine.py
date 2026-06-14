@@ -27,6 +27,7 @@ class BacktestConfig:
     limit_up_rate: float = 0.10
     limit_down_rate: float = -0.10
     t_plus_1: bool = True
+    strict_mode: bool = False  # True: 信号基于前一日数据，消除日线前视偏差
     start_date: str = '20230101'
     end_date: str = '20241231'
     rebalance_frequency: str = 'weekly'  # daily/weekly/monthly
@@ -775,56 +776,42 @@ class BacktestEngine:
             market_data_by_date: {date: {ts_code: stock_data}}
             strategy: 策略对象
             print_report: 是否打印每日报告
+
+        **严格模式 (strict_mode=True)**:
+        策略信号基于前一日收盘数据，消除日线前视偏差。
+        真实交易中你只能在开盘时下单，当时不知道当日收盘价。
+        因此严格模式下策略使用昨日数据决策，今日开盘价执行。
         """
         from .performance import PerformanceAnalyzer
 
         self.reset()
         dates = sorted(market_data_by_date.keys())
         prev_date = None
+        prev_portfolio = None  # 前一日收盘后的 portfolio 快照
+
+        strict = self.config.strict_mode
 
         print(f"开始回测 | 区间: {dates[0]} ~ {dates[-1]} | 初始资金: {self.config.initial_capital:,.0f}")
         print(f"调仓频率: {self.config.rebalance_frequency} | 止损线: {self.config.stop_loss_rate:.0%} | 移动止盈: {self.config.move_stop_rate:.0%}")
+        if strict:
+            print(f"[Strict Mode] 策略基于前一日收盘数据决策，消除前视偏差")
 
         for i, date in enumerate(dates):
             self.current_date = date
             market_data = market_data_by_date[date]
 
-            # 更新持仓
-            self.update_positions(market_data)
-
-            # 检查止损止盈
-            stop_signals = self.check_stop_loss_and_take_profit(market_data)
-
             # 记录本日买入卖出
             day_buys = []
             day_sells = []
 
-            # 执行止损止盈卖出
-            for sig in stop_signals:
-                ts_code = sig['ts_code']
-                quantity = self.get_sell_quantity(ts_code)
-                if quantity > 0 and ts_code in market_data:
-                    price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
-                    old_count = len(self.trade_records)
-                    if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason']):
-                        if len(self.trade_records) > old_count:
-                            day_sells.append(self.trade_records[-1])
+            # ── 严格模式 ──
+            if strict and prev_date is not None:
+                prev_market_data = market_data_by_date.get(prev_date, {})
 
-            # 判断是否调仓日
-            is_rebalance = self.check_rebalance_day(date, prev_date)
-
-            if is_rebalance:
-                portfolio = self.get_portfolio()
-                signals = strategy.generate_signals(date, market_data, portfolio)
-
-                sell_signals = [s for s in signals if s['signal'] == 'SELL']
-                buy_signals = [s for s in signals if s['signal'] == 'BUY']
-
-                # 执行卖出
-                for sig in sell_signals:
+                # ① 止损止盈：基于前一日数据判断（不能用当日收盘价知道该止损）
+                stop_signals = self.check_stop_loss_and_take_profit(prev_market_data)
+                for sig in stop_signals:
                     ts_code = sig['ts_code']
-                    if ts_code in [s.ts_code for s in day_sells]:
-                        continue  # 已经止损卖出的跳过
                     quantity = self.get_sell_quantity(ts_code)
                     if quantity > 0 and ts_code in market_data:
                         price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
@@ -833,27 +820,103 @@ class BacktestEngine:
                             if len(self.trade_records) > old_count:
                                 day_sells.append(self.trade_records[-1])
 
-                # 执行买入
-                for sig in buy_signals:
-                    ts_code = sig['ts_code']
-                    if len(self.positions) >= self.config.max_position_num:
-                        break
-                    if ts_code in self.positions or ts_code not in market_data:
-                        continue
+                # ② 策略信号：基于前一日收盘数据决策
+                is_rebalance = self.check_rebalance_day(date, prev_date)
+                if is_rebalance and prev_portfolio is not None:
+                    signals = strategy.generate_signals(prev_date, prev_market_data, prev_portfolio)
 
-                    price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
-                    quantity = self.calculate_buy_quantity(price, sig['weight'])
-                    if quantity >= 100:
+                    sell_signals = [s for s in signals if s['signal'] == 'SELL']
+                    buy_signals = [s for s in signals if s['signal'] == 'BUY']
+
+                    for sig in sell_signals:
+                        ts_code = sig['ts_code']
+                        if ts_code in [s.ts_code for s in day_sells]:
+                            continue
+                        quantity = self.get_sell_quantity(ts_code)
+                        if quantity > 0 and ts_code in market_data:
+                            price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
+                            old_count = len(self.trade_records)
+                            if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                                if len(self.trade_records) > old_count:
+                                    day_sells.append(self.trade_records[-1])
+
+                    for sig in buy_signals:
+                        ts_code = sig['ts_code']
+                        if len(self.positions) >= self.config.max_position_num:
+                            break
+                        if ts_code in self.positions or ts_code not in market_data:
+                            continue
+                        price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
+                        quantity = self.calculate_buy_quantity(price, sig['weight'])
+                        if quantity >= 100:
+                            old_count = len(self.trade_records)
+                            if self.execute_buy(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                                if len(self.trade_records) > old_count:
+                                    day_buys.append(self.trade_records[-1])
+
+            # ── 普通模式（保持原有逻辑） ──
+            else:
+                # 检查止损止盈
+                stop_signals = self.check_stop_loss_and_take_profit(market_data)
+
+                for sig in stop_signals:
+                    ts_code = sig['ts_code']
+                    quantity = self.get_sell_quantity(ts_code)
+                    if quantity > 0 and ts_code in market_data:
+                        price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
                         old_count = len(self.trade_records)
-                        if self.execute_buy(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                        if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason']):
                             if len(self.trade_records) > old_count:
-                                day_buys.append(self.trade_records[-1])
+                                day_sells.append(self.trade_records[-1])
+
+                # 判断是否调仓日
+                is_rebalance = self.check_rebalance_day(date, prev_date)
+
+                if is_rebalance:
+                    portfolio = self.get_portfolio()
+                    signals = strategy.generate_signals(date, market_data, portfolio)
+
+                    sell_signals = [s for s in signals if s['signal'] == 'SELL']
+                    buy_signals = [s for s in signals if s['signal'] == 'BUY']
+
+                    for sig in sell_signals:
+                        ts_code = sig['ts_code']
+                        if ts_code in [s.ts_code for s in day_sells]:
+                            continue
+                        quantity = self.get_sell_quantity(ts_code)
+                        if quantity > 0 and ts_code in market_data:
+                            price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
+                            old_count = len(self.trade_records)
+                            if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                                if len(self.trade_records) > old_count:
+                                    day_sells.append(self.trade_records[-1])
+
+                    for sig in buy_signals:
+                        ts_code = sig['ts_code']
+                        if len(self.positions) >= self.config.max_position_num:
+                            break
+                        if ts_code in self.positions or ts_code not in market_data:
+                            continue
+                        price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
+                        quantity = self.calculate_buy_quantity(price, sig['weight'])
+                        if quantity >= 100:
+                            old_count = len(self.trade_records)
+                            if self.execute_buy(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                                if len(self.trade_records) > old_count:
+                                    day_buys.append(self.trade_records[-1])
+
+            # ③ 更新持仓市值（始终用当日收盘价，盘后估值）
+            self.update_positions(market_data)
+
+            # ④ 保存前一日 portfolio 快照（供严格模式次日使用）
+            if strict:
+                prev_portfolio = self.get_portfolio()
 
             # 记录净值
             self.record_daily_nav(date)
 
             # 生成每日操作记录
-            if day_buys or day_sells or is_rebalance:
+            if day_buys or day_sells or (not strict and self.check_rebalance_day(date, prev_date)):
                 op = self.generate_daily_operation(date, market_data, day_buys, day_sells)
                 self.daily_operations.append(op)
 

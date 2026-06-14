@@ -480,6 +480,14 @@
                             <label>调仓</label>
                             <select id="bt-rebalance"><option value="daily">日</option><option value="weekly" selected>周</option><option value="monthly">月</option></select>
                         </div>
+                        <div class="form-row">
+                            <label>严格模式</label>
+                            <label class="toggle-switch" style="margin:0;">
+                                <input type="checkbox" id="bt-strict">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span style="font-size:0.72rem;color:var(--text-dim);" title="策略基于前一日收盘数据决策，消除日线前视偏差">消除前视偏差（昨日数据决策→今日开盘执行）</span>
+                        </div>
                     </div>
 
                     <!-- Strategy Selection -->
@@ -1409,6 +1417,7 @@ async function runBacktest() {
                 max_position: parseInt(document.getElementById('bt-maxpos').value) || 5,
                 stop_loss: stopLoss, move_stop: moveStop,
                 rebalance_frequency: document.getElementById('bt-rebalance').value,
+                strict_mode: document.getElementById('bt-strict')?.checked || false,
             })
         });
         const json = await resp.json();
