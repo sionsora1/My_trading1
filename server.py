@@ -20,7 +20,7 @@ LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "server.log"
 
 def setup_logging():
-    """配置全局日志：控制台 + 滚动文件（单文件 5MB，保留 5 个）"""
+    """配置全局日志：控制台 + 滚动文件（单文件 5MB，保留 5 个）+ 错误汇总"""
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
@@ -38,7 +38,7 @@ def setup_logging():
     console.setFormatter(fmt)
     root.addHandler(console)
 
-    # 滚动文件：5MB/个，保留5个（最多 ~25MB）
+    # 滚动文件：server.log（5MB/个，保留5个）
     file_handler = RotatingFileHandler(
         LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5,
         encoding='utf-8'
@@ -47,8 +47,21 @@ def setup_logging():
     file_handler.setFormatter(fmt)
     root.addHandler(file_handler)
 
+    # 全局错误汇总：error.log（ERROR+，5MB/个，保留5个）
+    error_handler = RotatingFileHandler(
+        LOG_DIR / 'error.log', maxBytes=5 * 1024 * 1024, backupCount=5,
+        encoding='utf-8'
+    )
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(fmt)
+    root.addHandler(error_handler)
+
 setup_logging()
 logger = logging.getLogger("server")
+
+# 回测专用 Logger（JSON 格式写入 backtest.log，不污染 server.log）
+from utils.logger import get_logger as _get_logger
+backtest_logger = _get_logger('backtest', 'backtest.log')
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -1103,30 +1116,51 @@ def _build_backtest_data_from_db(stock_pool: list, start_date: str, end_date: st
     db.close()
 
     if loaded > 0:
-        print(f"[回测] 从数据库加载 {loaded} 只股票, {len(market_data)} 个交易日")
+        logger.info('回测数据加载完成', extra={'data': {
+            'source': 'database',
+            'loaded_stocks': loaded,
+            'trading_days': len(market_data),
+        }})
 
     return market_data
 
 
 def execute_backtest(task_id: str, request: BacktestRequest):
     """执行回测（后台任务）"""
+    import time as _time
+    _t_start = _time.time()
+
+    backtest_logger.info('回测任务开始', extra={'data': {
+        'task_id': task_id,
+        'stock_pool': request.stock_pool,
+        'start_date': request.start_date,
+        'end_date': request.end_date,
+        'strategy_type': request.strategy_type,
+        'initial_capital': request.initial_capital,
+    }})
+
     try:
         # 更新状态
-        tasks[task_id]["status"] = "running"
-        tasks[task_id]["message"] = "正在获取数据..."
-        tasks[task_id]["progress"] = 0.1
+        tasks[task_id]['status'] = 'running'
+        tasks[task_id]['message'] = '正在获取数据...'
+        tasks[task_id]['progress'] = 0.1
 
         # 获取数据（优先使用数据库，快速且离线可用）
+        _t_data = _time.time()
         market_data = _build_backtest_data_from_db(request.stock_pool, request.start_date, request.end_date)
 
         if not market_data or len(market_data) == 0:
             # 数据库没有数据，尝试 JSON 缓存
             cache_filename = f'market_data_{request.start_date}_{request.end_date}_{len(request.stock_pool)}stocks'
             market_data = data_cache.load_market_data(cache_filename)
+            if market_data and len(market_data) > 0:
+                backtest_logger.info('数据加载完成', extra={'data': {
+                    'task_id': task_id, 'source': 'json_cache', 'trading_days': len(market_data),
+                }})
 
         if not market_data or not isinstance(market_data, dict) or len(market_data) < 10:
             # 最后才从 AKShare 获取（慢）
-            tasks[task_id]["message"] = "正在从网络获取数据（首次较慢）..."
+            tasks[task_id]['message'] = '正在从网络获取数据（首次较慢）...'
             market_data = data_fetcher.build_market_data_by_date(
                 request.stock_pool,
                 request.start_date,
@@ -1135,11 +1169,22 @@ def execute_backtest(task_id: str, request: BacktestRequest):
             if market_data:
                 cache_filename = f'market_data_{request.start_date}_{request.end_date}_{len(request.stock_pool)}stocks'
                 data_cache.save_market_data(market_data, cache_filename)
+                backtest_logger.info('数据加载完成', extra={'data': {
+                    'task_id': task_id, 'source': 'akshare', 'trading_days': len(market_data),
+                    'elapsed_s': round(_time.time() - _t_data, 1),
+                }})
 
         if not market_data or len(market_data) == 0:
-            tasks[task_id]["status"] = "failed"
-            tasks[task_id]["message"] = "获取数据失败"
+            tasks[task_id]['status'] = 'failed'
+            tasks[task_id]['message'] = '获取数据失败'
+            backtest_logger.error('回测失败: 数据获取失败', extra={'data': {'task_id': task_id}})
             return
+
+        _elapsed_data = round(_time.time() - _t_data, 1)
+        backtest_logger.info('数据加载完成', extra={'data': {
+            'task_id': task_id, 'source': 'database', 'trading_days': len(market_data),
+            'elapsed_s': _elapsed_data,
+        }})
 
         tasks[task_id]["progress"] = 0.4
         tasks[task_id]["message"] = "正在运行策略回测..."
@@ -1219,14 +1264,34 @@ def execute_backtest(task_id: str, request: BacktestRequest):
         }
 
         # 更新任务状态
-        tasks[task_id]["status"] = "completed"
-        tasks[task_id]["progress"] = 1.0
-        tasks[task_id]["message"] = "回测完成"
-        tasks[task_id]["completed_at"] = datetime.now().isoformat()
+        tasks[task_id]['status'] = 'completed'
+        tasks[task_id]['progress'] = 1.0
+        tasks[task_id]['message'] = '回测完成'
+        tasks[task_id]['completed_at'] = datetime.now().isoformat()
+
+        # 汇总指标
+        _summary = {}
+        for _sn, _sr in strategy_results.items():
+            _m = _sr.get('metrics', {})
+            _summary[_sn] = {
+                'total_return': _m.get('total_return'),
+                'annual_return': _m.get('annual_return'),
+                'sharpe_ratio': _m.get('sharpe_ratio'),
+                'max_drawdown': _m.get('max_drawdown'),
+                'win_rate': _m.get('win_rate'),
+                'trade_count': _m.get('trade_count'),
+            }
+        _elapsed_total = round(_time.time() - _t_start, 1)
+        backtest_logger.info('回测完成', extra={'data': {
+            'task_id': task_id,
+            'strategy_results': _summary,
+            'elapsed_s': _elapsed_total,
+        }})
 
     except Exception as e:
-        tasks[task_id]["status"] = "failed"
-        tasks[task_id]["message"] = f"回测失败: {str(e)}"
+        tasks[task_id]['status'] = 'failed'
+        tasks[task_id]['message'] = f'回测失败: {str(e)}'
+        backtest_logger.error(f'回测失败: {e}', exc_info=True, extra={'data': {'task_id': task_id}})
 
 
 # ============================================================
@@ -1955,32 +2020,65 @@ async def get_db_kline(
 # 日志查看 API
 # ============================================================
 
-@app.get("/api/logs")
-async def get_logs(lines: int = 200, level: Optional[str] = None):
-    """查看最近 N 行日志（默认 200 行，可按 level 过滤）"""
-    try:
-        if not LOG_FILE.exists():
-            return {"status": "success", "data": {"lines": [], "total": 0, "file": str(LOG_FILE)}}
+# 模块 → 日志文件映射
+_LOG_MODULES = {
+    'server': LOG_FILE,
+    'live_trading': LOG_DIR / 'live_trading.log',
+    'backtest': LOG_DIR / 'backtest.log',
+    'risk': LOG_DIR / 'risk.log',
+    'data': LOG_DIR / 'data.log',
+    'error': LOG_DIR / 'error.log',
+}
 
-        with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
+
+@app.get("/api/logs")
+async def get_logs(
+    lines: int = 200,
+    level: Optional[str] = None,
+    module: Optional[str] = None,
+    keyword: Optional[str] = None,
+):
+    """查看最近 N 行日志，支持按模块、级别、关键词过滤"""
+    try:
+        # 选择日志文件
+        target_file = LOG_FILE
+        if module and module in _LOG_MODULES:
+            target_file = _LOG_MODULES[module]
+
+        if not target_file.exists():
+            return {
+                'status': 'success',
+                'data': {
+                    'lines': [], 'total': 0, 'file': str(target_file),
+                    'available_modules': list(_LOG_MODULES.keys()),
+                }
+            }
+
+        with open(target_file, 'r', encoding='utf-8', errors='replace') as f:
             all_lines = f.readlines()
 
+        # 按级别过滤
         if level:
             level_upper = level.upper()
-            all_lines = [l for l in all_lines if f'[{level_upper}]' in l]
+            all_lines = [l for l in all_lines if f'[{level_upper}]' in l or f'"{level_upper}"' in l]
+
+        # 按关键词搜索
+        if keyword:
+            all_lines = [l for l in all_lines if keyword in l]
 
         recent = all_lines[-lines:]
         return {
-            "status": "success",
-            "data": {
-                "lines": [l.rstrip() for l in recent],
-                "total": len(all_lines),
-                "showing": len(recent),
-                "file": str(LOG_FILE),
+            'status': 'success',
+            'data': {
+                'lines': [l.rstrip() for l in recent],
+                'total': len(all_lines),
+                'showing': len(recent),
+                'file': str(target_file),
+                'available_modules': list(_LOG_MODULES.keys()),
             }
         }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {'status': 'error', 'message': str(e)}
 
 
 @app.get("/api/logs/download")
@@ -2066,23 +2164,11 @@ A股量化交易系统 - 后端服务
                     "formatter": "default",
                     "stream": "ext://sys.stdout",
                 },
-                "file": {
-                    "class": "logging.handlers.RotatingFileHandler",
-                    "formatter": "default",
-                    "filename": str(LOG_FILE),
-                    "maxBytes": 5 * 1024 * 1024,
-                    "backupCount": 5,
-                    "encoding": "utf-8",
-                },
-            },
-            "root": {
-                "level": "INFO",
-                "handlers": ["default", "file"],
             },
             "loggers": {
-                "uvicorn": {"level": "INFO", "handlers": ["default", "file"], "propagate": False},
-                "uvicorn.error": {"level": "INFO", "handlers": ["default", "file"], "propagate": False},
-                "uvicorn.access": {"level": "INFO", "handlers": ["default", "file"], "propagate": False},
+                "uvicorn": {"level": "INFO", "handlers": ["default"]},
+                "uvicorn.error": {"level": "INFO", "handlers": ["default"]},
+                "uvicorn.access": {"level": "INFO", "handlers": ["default"]},
             },
         },
     )

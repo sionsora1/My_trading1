@@ -13,6 +13,9 @@ from .base import (
     OrderRequest, OrderResult, OrderSide, Signal,
     DailyRiskLimit, PositionInfo, AccountInfo
 )
+from utils.logger import get_logger
+
+logger = get_logger('risk', 'risk.log')
 
 
 @dataclass
@@ -92,6 +95,9 @@ class RiskManager:
         """
         # 1. 交易暂停检查
         if self.state.trading_halted:
+            logger.warning('交易已暂停，订单被拦截', extra={'data': {
+                'ts_code': order.ts_code, 'reason': '日亏损触发交易暂停',
+            }})
             return RiskCheckResult(
                 passed=False,
                 reason='今日交易已暂停（触发日亏损限制）',
@@ -132,6 +138,9 @@ class RiskManager:
         order_amount = order.price * order.quantity if order.price > 0 else account.total_assets * 0.05
         if (self.config.require_confirm_large and
                 order_amount >= self.config.large_order_threshold):
+            logger.warning('大额订单需确认', extra={'data': {
+                'ts_code': order.ts_code, 'amount': order_amount,
+            }})
             return RiskCheckResult(
                 passed=True,
                 reason=f'大额订单（{order_amount:,.0f}元），需人工确认',
@@ -139,6 +148,9 @@ class RiskManager:
                 requires_confirm=True
             )
 
+        logger.debug('风控检查通过', extra={'data': {
+            'ts_code': order.ts_code, 'side': order.side.value if hasattr(order.side, 'value') else str(order.side),
+        }})
         return RiskCheckResult(passed=True, reason='风控检查通过')
 
     def check_signal(self, signal: Signal, account: AccountInfo,
@@ -268,6 +280,11 @@ class RiskManager:
             self.state.max_daily_loss_triggered = True
             self.state.trading_halted = True
             self._save_state()
+            logger.critical('日亏损触发，交易暂停', extra={'data': {
+                'daily_loss_rate': round(current_daily_rate, 4),
+                'threshold': self.config.max_daily_loss_rate,
+                'current_equity': account.total_assets,
+            }})
             return RiskCheckResult(
                 passed=False,
                 reason=f'触发日亏损限制（当日亏损{current_daily_rate:.2%} ≥ {self.config.max_daily_loss_rate:.2%}），交易暂停',
@@ -281,6 +298,10 @@ class RiskManager:
         if self.state.consecutive_loss_days >= self.state.max_consecutive_loss_days:
             self.state.trading_halted = True
             self._save_state()
+            logger.critical('连续亏损触发，交易暂停', extra={'data': {
+                'consecutive_days': self.state.consecutive_loss_days,
+                'max': self.state.max_consecutive_loss_days,
+            }})
             return RiskCheckResult(
                 passed=False,
                 reason=f'连续亏损{self.state.consecutive_loss_days}天（上限{self.state.max_consecutive_loss_days}天），交易暂停',
@@ -297,6 +318,12 @@ class RiskManager:
         if drawdown <= self.state.max_drawdown_rate:
             self.state.trading_halted = True
             self._save_state()
+            logger.critical('最大回撤触发，交易暂停', extra={'data': {
+                'drawdown': round(drawdown, 4),
+                'threshold': self.state.max_drawdown_rate,
+                'peak_equity': self.state.peak_equity,
+                'current_equity': account.total_assets,
+            }})
             return RiskCheckResult(
                 passed=False,
                 reason=f'触发最大回撤限制（回撤{drawdown:.1%} ≥ {self.state.max_drawdown_rate:.1%}），交易暂停',
@@ -331,6 +358,12 @@ class RiskManager:
                 max_consecutive_loss_days=old_max_consec,
                 max_drawdown_rate=old_max_dd,
             )
+            logger.info('风控状态跨日重置', extra={'data': {
+                'new_date': today,
+                'starting_equity': account.total_assets,
+                'consecutive_loss_days': old_consecutive,
+                'yesterday_loss': yesterday_loss,
+            }})
             self._save_state()
             return
 
@@ -356,6 +389,10 @@ class RiskManager:
         self.state.daily_trade_count += 1
         if amount > 0:
             self.state.daily_buy_amount += amount
+        logger.info('交易记录', extra={'data': {
+            'amount': amount,
+            'daily_trade_count': self.state.daily_trade_count,
+        }})
         self._save_state()
 
     def get_status(self) -> dict:
@@ -410,8 +447,8 @@ class RiskManager:
             }
             with open(self.state_file, 'w', encoding='utf-8') as f:
                 json.dump(state_dict, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error('保存风控状态失败', extra={'data': {'file': self.state_file, 'error': str(e)}})
 
     def _load_state(self):
         """从文件加载风控状态"""
@@ -430,5 +467,5 @@ class RiskManager:
                     self.state.daily_buy_amount = data.get('daily_buy_amount', 0)
                     self.state.max_daily_loss_triggered = data.get('max_daily_loss_triggered', False)
                     self.state.trading_halted = data.get('trading_halted', False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning('加载风控状态失败', extra={'data': {'file': self.state_file, 'error': str(e)}})

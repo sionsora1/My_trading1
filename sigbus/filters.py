@@ -5,6 +5,10 @@
 
 from typing import Tuple, List, Optional
 
+from utils.logger import get_logger
+
+logger = get_logger('risk', 'risk.log')
+
 
 class SignalFilters:
     """
@@ -51,10 +55,15 @@ class SignalFilters:
 
         loss_rate = abs(daily_pnl) / total_assets if total_assets > 0 else 0
         if loss_rate > self.max_daily_loss_rate:
+            logger.warning('日亏损触发', extra={'data': {
+                'loss_rate': round(loss_rate, 4), 'threshold': self.max_daily_loss_rate,
+                'daily_pnl': daily_pnl, 'total_assets': total_assets,
+            }})
             return False, (
                 f'日亏损({loss_rate:.2%})超过上限'
                 f'({self.max_daily_loss_rate:.2%})'
             )
+        logger.debug('日亏损检查通过')
         return True, ''
 
     def check_position_weight(
@@ -79,10 +88,15 @@ class SignalFilters:
 
         weight = suggest_amount / total_assets
         if weight > self.max_single_position_weight:
+            logger.warning('单只仓位超限', extra={'data': {
+                'ts_code': ts_code, 'weight': round(weight, 4),
+                'max': self.max_single_position_weight,
+            }})
             return False, (
                 f'{ts_code} 建议仓位({weight:.1%})超过'
                 f'单只上限({self.max_single_position_weight:.1%})'
             )
+        logger.debug(f'仓位权重检查通过: {ts_code}')
         return True, ''
 
     def check_position_count(
@@ -106,10 +120,15 @@ class SignalFilters:
         """
         if current_count >= self.max_total_positions:
             if ts_code not in position_codes:
+                logger.warning('持仓数达上限', extra={'data': {
+                    'ts_code': ts_code, 'current': current_count,
+                    'max': self.max_total_positions,
+                }})
                 return False, (
                     f'持仓数已达上限({self.max_total_positions}只)，'
                     f'无法新买入 {ts_code}'
                 )
+        logger.debug(f'持仓数量检查通过: {ts_code}')
         return True, ''
 
     def check_order_amount(self, amount: float) -> Tuple[bool, str]:
@@ -123,10 +142,14 @@ class SignalFilters:
             (passed, reason)
         """
         if amount > self.max_single_order_amount:
+            logger.warning('单笔金额超限', extra={'data': {
+                'amount': amount, 'max': self.max_single_order_amount,
+            }})
             return False, (
                 f'单笔金额({amount:,.0f})超过上限'
                 f'({self.max_single_order_amount:,.0f})'
             )
+        logger.debug('单笔金额检查通过')
         return True, ''
 
     def check_blacklist(self, ts_code: str) -> Tuple[bool, str]:
@@ -140,7 +163,9 @@ class SignalFilters:
             (passed, reason)
         """
         if ts_code in self._blacklist:
+            logger.warning('黑名单拦截', extra={'data': {'ts_code': ts_code}})
             return False, f'{ts_code} 在黑名单中'
+        logger.debug(f'黑名单检查通过: {ts_code}')
         return True, ''
 
     def check_limit_up_down(
@@ -168,8 +193,14 @@ class SignalFilters:
         ts_code = stock.get('ts_code', '') or stock.get('code', '')
 
         if direction == 'BUY' and pct_chg >= 9.9:
+            logger.warning('涨跌停拦截', extra={'data': {
+                'ts_code': ts_code, 'pct_chg': pct_chg, 'direction': direction,
+            }})
             return False, f'{ts_code} 接近涨停({pct_chg:.1f}%)，暂停买入'
         if direction == 'SELL' and pct_chg <= -9.9:
+            logger.warning('涨跌停拦截', extra={'data': {
+                'ts_code': ts_code, 'pct_chg': pct_chg, 'direction': direction,
+            }})
             return False, f'{ts_code} 接近跌停({pct_chg:.1f}%)，暂停卖出'
 
         return True, ''
@@ -191,10 +222,14 @@ class SignalFilters:
         """
         threshold = min_amount if min_amount is not None else self.min_order_amount
         if amount < threshold:
+            logger.warning('金额不足最低限额', extra={'data': {
+                'amount': amount, 'min': threshold,
+            }})
             return False, (
                 f'订单金额({amount:,.0f})低于最低限额'
                 f'({threshold:,.0f})'
             )
+        logger.debug('最小金额检查通过')
         return True, ''
 
     def run_all_checks(
@@ -261,6 +296,9 @@ class SignalFilters:
             if not passed:
                 return False, reason
 
+        logger.debug('全部检查通过', extra={'data': {
+            'ts_code': ts_code, 'direction': direction, 'amount': suggest_amount,
+        }})
         return True, '全部检查通过'
 
     # ============================================================
@@ -271,11 +309,13 @@ class SignalFilters:
         """添加股票到黑名单"""
         if ts_code not in self._blacklist:
             self._blacklist.append(ts_code)
+            logger.warning('股票加入黑名单', extra={'data': {'ts_code': ts_code}})
 
     def remove_from_blacklist(self, ts_code: str):
         """从黑名单移除股票"""
         if ts_code in self._blacklist:
             self._blacklist.remove(ts_code)
+            logger.info('股票移出黑名单', extra={'data': {'ts_code': ts_code}})
 
     def get_blacklist(self) -> List[str]:
         """获取当前黑名单列表"""

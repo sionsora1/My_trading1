@@ -14,6 +14,9 @@ import random
 import requests
 
 from config.settings import DATA_CACHE_DIR
+from utils.logger import get_logger
+
+logger = get_logger('data', 'data.log')
 
 
 class DataFetcher:
@@ -21,7 +24,7 @@ class DataFetcher:
 
     def __init__(self):
         os.makedirs(DATA_CACHE_DIR, exist_ok=True)
-        print("[DataFetcher] AKShare数据源初始化成功")
+        logger.info('数据源初始化成功', extra={'data': {'source': 'AKShare'}})
 
     # ============================================================
     # 股票列表
@@ -150,7 +153,7 @@ class DataFetcher:
                     }
 
             except Exception as e:
-                print(f"[DataFetcher] 实时行情请求失败 (batch {i}): {e}")
+                logger.warning('实时行情请求失败', extra={'data': {'batch': i, 'error': str(e)}})
                 continue
 
             # 随机间隔 0.5~1.5 秒，避免被识别为爬虫
@@ -221,7 +224,7 @@ class DataFetcher:
                 return df
 
         except Exception as e:
-            pass  # 尝试下一个数据源
+            logger.debug('新浪数据源失败，尝试东财源', extra={'data': {'ts_code': ts_code}})
 
         # 数据源2: 东财源（stock_zh_a_hist）
         try:
@@ -254,7 +257,7 @@ class DataFetcher:
                 return df
 
         except Exception as e:
-            pass  # 尝试下一个数据源
+            logger.debug('东财数据源失败，尝试腾讯源', extra={'data': {'ts_code': ts_code}})
 
         # 数据源3: 腾讯源
         try:
@@ -270,7 +273,7 @@ class DataFetcher:
                 return df
 
         except Exception as e:
-            pass
+            logger.debug('腾讯数据源也失败，返回空DataFrame', extra={'data': {'ts_code': ts_code}})
 
         return pd.DataFrame()
 
@@ -431,7 +434,7 @@ class DataFetcher:
             }
 
         except Exception as e:
-            print(f"  [财务数据] {symbol} 获取失败: {e}")
+            logger.warning('财务数据获取失败', extra={'data': {'symbol': symbol, 'error': str(e)}})
             return self._empty_financial()
 
     def _empty_financial(self) -> dict:
@@ -642,8 +645,10 @@ class DataFetcher:
         start_dt = datetime.strptime(start_date, '%Y%m%d')
         extended_start = (start_dt - timedelta(days=180)).strftime('%Y%m%d')
 
-        print(f"  获取 {len(stock_codes)} 只股票的历史数据...")
-        print(f"  数据区间: {extended_start} ~ {end_date}（含前导数据）")
+        logger.info('开始获取历史数据', extra={'data': {
+            'stock_count': len(stock_codes),
+            'date_range': f'{extended_start}~{end_date}',
+        }})
 
         for i, code in enumerate(stock_codes):
             ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
@@ -652,7 +657,7 @@ class DataFetcher:
                 # 获取扩展的日线数据（包含前导数据）
                 daily = self.get_daily_data(ts_code, extended_start, end_date)
                 if daily.empty:
-                    print(f"  [{i+1}/{len(stock_codes)}] {code}: 无数据，跳过")
+                    logger.warning(f'{code}: 无数据，跳过')
                     continue
 
                 # 获取股票信息（缓存）
@@ -778,15 +783,15 @@ class DataFetcher:
                         'name': name,
                     }
 
-                print(f"  [{i+1}/{len(stock_codes)}] {code} {name}: {len(daily_backtest)}条数据")
+                logger.debug(f'{code} {name}: {len(daily_backtest)}条数据')
 
                 time.sleep(0.5)  # 限速
 
             except Exception as e:
-                print(f"  [{i+1}/{len(stock_codes)}] {code}: 失败 - {e}")
+                logger.error(f'{code}: 获取失败', extra={'data': {'code': code, 'error': str(e)}})
                 continue
 
-        print(f"  共获取 {len(market_data_by_date)} 个交易日的数据")
+        logger.info('历史数据获取完成', extra={'data': {'trading_days': len(market_data_by_date)}})
         return market_data_by_date
 
     # ============================================================
@@ -988,8 +993,7 @@ class DataFetcher:
             try:
                 df = self.get_minute_data(ts_code=code, period=period)
                 if df.empty:
-                    if (i + 1) % 10 == 0 or i == total_stocks - 1:
-                        print(f"  [{i + 1}/{total_stocks}] {code}: no minute data")
+                    logger.debug(f'{code}: 无分钟线数据')
                     continue
 
                 rows = df.to_dict(orient='records')
@@ -1003,8 +1007,7 @@ class DataFetcher:
                         rejected += 1
 
                 if rejected > 0:
-                    print(f"  [{i + 1}/{total_stocks}] {code}: "
-                          f"{rejected} / {len(rows)} minute rows rejected")
+                    logger.warning(f'{code}: {rejected}行被数据验证拒绝')
 
                 if valid_rows:
                     db.upsert_minute_bars(valid_rows)
@@ -1012,18 +1015,17 @@ class DataFetcher:
 
                 # Progress reporting every 10 stocks
                 if (i + 1) % 10 == 0:
-                    print(f"  [{i + 1}/{total_stocks}] progress: "
-                          f"{total_stored} minute rows stored so far")
+                    logger.info(f'分钟线进度: {i+1}/{total_stocks}, {total_stored}行已存储')
 
             except Exception as e:
-                print(f"  [{i + 1}/{total_stocks}] {code}: "
-                      f"minute fetch failed - {e}")
+                logger.error(f'{code}: 分钟线获取失败', extra={'data': {'code': code, 'error': str(e)}})
 
             # Rate limiting between stocks
             time.sleep(0.3)
 
-        print(f"[DataFetcher] fetch_and_store_minute_bars done: "
-              f"{total_stored} rows across {total_stocks} stocks")
+        logger.info('分钟线批量获取完成', extra={'data': {
+            'total_stored': total_stored, 'total_stocks': total_stocks,
+        }})
         return total_stored
 
 
@@ -1039,7 +1041,7 @@ class DataCache:
         filepath = f"{self.cache_dir}/{filename}.json"
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-        print(f"数据已保存: {filepath}")
+        logger.info('数据已缓存', extra={'data': {'filepath': filepath}})
 
     def load_market_data(self, filename: str = 'market_data'):
         """加载市场数据"""

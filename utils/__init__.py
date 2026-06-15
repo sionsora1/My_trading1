@@ -1,1 +1,1 @@
-from .logger import Logger
+from .logger import get_logger, JsonFormatter

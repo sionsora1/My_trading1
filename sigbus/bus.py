@@ -10,6 +10,9 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 from .filters import SignalFilters
+from utils.logger import get_logger
+
+logger = get_logger('live_trading', 'live_trading.log')
 
 
 class SignalBus:
@@ -119,9 +122,6 @@ class SignalBus:
         strategies: list
     ) -> List[dict]:
         """① collect: 遍历策略收集信号"""
-        import logging
-        logger = logging.getLogger("server")
-
         all_signals = []
         for strategy in strategies:
             try:
@@ -144,7 +144,7 @@ class SignalBus:
                 all_signals.extend(signals)
             except Exception as e:
                 strategy_name = getattr(strategy, 'name', strategy.__class__.__name__)
-                print(f"[SignalBus] 策略 {strategy_name} 生成信号出错: {e}")
+                logger.error(f'策略 {strategy_name} 生成信号出错', extra={'data': {'strategy': strategy_name, 'error': str(e)}})
 
         return all_signals
 
@@ -184,8 +184,6 @@ class SignalBus:
         risk_manager=None
     ) -> List[dict]:
         """③ risk_filter: 涨跌停 / 持仓数量 / 最小金额检查"""
-        import logging
-        logger = logging.getLogger("server")
         positions = portfolio.get('positions', {})
         total_assets = portfolio.get('total_assets', self._calc_total_assets(portfolio))
         cash = portfolio.get('cash', 0)

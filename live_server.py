@@ -7,11 +7,12 @@ import sys
 import os
 import time
 import json
-import logging
 import threading
 from datetime import datetime, timedelta
 
-logger = logging.getLogger("server")
+from utils.logger import get_logger
+
+logger = get_logger('live_trading', 'live_trading.log')
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -56,8 +57,11 @@ class LiveTradingServer:
         self.scan_count = 0
         self.today_orders = []
 
-        print(f"[实盘] 初始化完成 | 券商: {self.broker_name}({BROKER_REGISTRY[self.broker_name]['name']}) "
-              f"| 模式: {'全自动' if self.trade_mode == 'auto' else '半自动'}")
+        logger.info('实盘服务初始化完成', extra={'data': {
+            'broker': self.broker_name,
+            'broker_display': BROKER_REGISTRY[self.broker_name]['name'],
+            'mode': '全自动' if self.trade_mode == 'auto' else '半自动',
+        }})
 
     def _init_broker(self):
         """初始化券商连接器"""
@@ -72,7 +76,10 @@ class LiveTradingServer:
                 f'券商 "{self.broker_name}" 连接失败，已自动降级为模拟盘。'
                 f'请检查券商配置和网络连接。'
             )
-            print(f'[实盘] ⚠️  {self.broker_fallback_reason}')
+            logger.warning('券商连接失败，降级为模拟盘', extra={'data': {
+                'broker': self.broker_name,
+                'reason': '连接失败，请检查券商配置和网络连接',
+            }})
             self.broker = get_broker('sim', self.config.get('sim', {}))
             self.broker.connect()
             self.broker_name = 'sim'
@@ -127,7 +134,7 @@ class LiveTradingServer:
                 s = _get_strat(name)
                 strategies.append(s)
             except Exception as e:
-                print(f"[LiveServer] 策略 {name} 加载失败: {e}")
+                logger.error(f'策略 {name} 加载失败: {e}', extra={'data': {'strategy': name}})
 
         return strategies, profile
 
@@ -476,6 +483,15 @@ class LiveTradingServer:
                 self.today_orders.append(order_id)
                 self.broker._save_account()
 
+                logger.info('手动交易记录', extra={'data': {
+                    'ts_code': ts_code,
+                    'side': side.upper(),
+                    'price': price,
+                    'quantity': quantity,
+                    'amount': amount,
+                    'commission': round(commission, 2),
+                }})
+
                 # 同步更新执行清单
                 self.checklist_items_done_for_code(ts_code, price, quantity)
 
@@ -543,7 +559,11 @@ class LiveTradingServer:
                 return {'status': 'skipped', 'reason': '未配置股票池', 'signals': [], 'trades': []}
 
             strategy_name = self.config.get('scan', {}).get('strategy', 'all')
-            logger.info(f"[Scan] 配置的策略: {strategy_name}")
+            _scan_start = time.time()
+            logger.info('策略扫描开始', extra={'data': {
+                'stock_pool_size': len(stock_pool),
+                'strategy': strategy_name,
+            }})
 
             end_date = datetime.now().strftime('%Y%m%d')
             start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
@@ -620,7 +640,8 @@ class LiveTradingServer:
                     risk_manager=self.risk_manager,
                 )
 
-                logger.info(f"[Scan] 策略 {active_profile.get('name')} 原始信号数: {len(bus_results) if bus_results else 0}")
+                _raw_count = len(bus_results) if bus_results else 0
+                logger.info(f'策略 {active_profile.get("name")} 生成 {_raw_count} 条原始信号')
 
                 if bus_results:
                     for sig in bus_results:
@@ -635,6 +656,14 @@ class LiveTradingServer:
                             strategy=sig.get('strategy', 'signal_bus'),
                         )
                         signal_bus_signals.append(signal_obj)
+                        logger.info('信号生成', extra={'data': {
+                            'strategy': sig.get('strategy', ''),
+                            'ts_code': sig['ts_code'],
+                            'signal': sig['signal'],
+                            'weight': sig.get('weight', 0),
+                            'reason': sig.get('reason', ''),
+                            'price': sig.get('price', stock_info.get('close', 0)),
+                        }})
 
             all_filtered_signals = signal_bus_signals
             all_trades = []
@@ -666,6 +695,11 @@ class LiveTradingServer:
                 if signal.signal == 'BUY':
                     # 检查持仓上限
                     if current_pos_count >= max_positions:
+                        logger.warning('信号被过滤', extra={'data': {
+                            'ts_code': signal.ts_code,
+                            'signal': signal.signal,
+                            'reason': f'持仓已达上限{max_positions}只',
+                        }})
                         all_trades.append({
                             'signal': signal.ts_code,
                             'side': signal.signal,
@@ -701,6 +735,11 @@ class LiveTradingServer:
                     continue  # HOLD 信号不交易
 
                 if quantity < 100 and signal.signal == 'BUY':
+                    logger.warning('信号被过滤', extra={'data': {
+                        'ts_code': signal.ts_code,
+                        'signal': signal.signal,
+                        'reason': '计算数量不足100股',
+                    }})
                     all_trades.append({
                         'signal': signal.ts_code,
                         'side': signal.signal,
@@ -710,6 +749,14 @@ class LiveTradingServer:
                     continue
 
                 if self.trade_mode == 'auto':
+                    logger.info('下单请求', extra={'data': {
+                        'ts_code': signal.ts_code,
+                        'side': signal.signal,
+                        'quantity': quantity,
+                        'price': price,
+                        'amount': price * quantity,
+                        'reason': f'[{signal.strategy}] {signal.reason}',
+                    }})
                     result = self.submit_order(
                         ts_code=signal.ts_code,
                         side=signal.signal,
@@ -717,6 +764,12 @@ class LiveTradingServer:
                         price=price,
                         reason=f"[{signal.strategy}] {signal.reason}"
                     )
+                    logger.info('下单结果', extra={'data': {
+                        'ts_code': signal.ts_code,
+                        'success': result.get('success', False),
+                        'order_id': result.get('order_id', ''),
+                        'error': result.get('error', ''),
+                    }})
                     if result.get('success'):
                         current_pos_count += 1
                     all_trades.append({
@@ -763,6 +816,13 @@ class LiveTradingServer:
             self.last_scan_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             self.scan_count += 1
 
+            _elapsed = round(time.time() - _scan_start, 1)
+            logger.info('策略扫描完成', extra={'data': {
+                'signal_count': len(deduped_signals),
+                'trade_count': len(all_trades),
+                'elapsed_s': _elapsed,
+            }})
+
             return {
                 'status': 'success',
                 'scan_time': self.last_scan_time,
@@ -777,8 +837,7 @@ class LiveTradingServer:
             }
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.error(f'策略扫描异常: {e}', exc_info=True)
             return {
                 'status': 'error',
                 'error': str(e),
@@ -814,7 +873,7 @@ class LiveTradingServer:
                 daemon=True
             )
             self.scan_thread.start()
-            print(f"[实盘] 后台扫描已启动，间隔: {interval}秒")
+            logger.info('后台扫描已启动', extra={'data': {'interval_seconds': interval}})
 
         return {
             'status': 'started',
@@ -844,7 +903,7 @@ class LiveTradingServer:
                     break
                 self.scan_and_trade()
             except Exception as e:
-                print(f"[实盘] 扫描异常: {e}")
+                logger.error(f'扫描异常: {e}', exc_info=True)
                 time.sleep(60)  # 出错后等待1分钟再试
 
     # ============================================================
@@ -894,9 +953,9 @@ class LiveTradingServer:
                         self.cache.save_market_data(market_data, cache_filename)
                         n_stocks = len(today_data)
                         n_dates = len(market_data)
-                        print(f"[实盘] 数据融合完成: {n_dates}天历史 + {n_stocks}只实时行情")
+                        logger.info('数据融合完成', extra={'data': {'history_dates': n_dates, 'realtime_stocks': n_stocks}})
             except Exception as e:
-                print(f"[实盘] 实时行情获取失败，使用历史数据: {e}")
+                logger.warning('实时行情获取失败，降级使用历史数据', extra={'data': {'error': str(e)}})
 
         return market_data
 
@@ -988,7 +1047,7 @@ class LiveTradingServer:
                         'industry': industry,
                     }
             except Exception as e:
-                print(f"[实盘] {code} 历史数据加载失败: {e}")
+                logger.warning(f'股票历史数据加载失败', extra={'data': {'code': code, 'error': str(e)}})
                 continue
 
         db.close()
@@ -1080,17 +1139,17 @@ def main():
 
     # 单次扫描
     if args.oneshot:
-        print("\n执行单次扫描...")
+        logger.info('执行单次扫描')
         result = server.scan_and_trade()
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return
 
-    # 持续运行
-    print("\n" + "=" * 60)
-    print("A股量化实盘交易服务")
+    # 持续运行 — 横幅输出保留 print（用户界面）
+    print('\n' + '=' * 60)
+    print('A股量化实盘交易服务')
     print(f"券商: {args.broker} | 模式: {args.mode} | 扫描间隔: {args.interval}秒")
-    print("=" * 60)
-    print("\n按 Ctrl+C 停止服务\n")
+    print('=' * 60)
+    print('\n按 Ctrl+C 停止服务\n')
 
     try:
         result = server.start(background=False)
@@ -1099,9 +1158,9 @@ def main():
             time.sleep(args.interval)
             server.scan_and_trade()
     except KeyboardInterrupt:
-        print("\n正在停止服务...")
+        logger.info('正在停止服务...')
         server.stop()
-        print("服务已停止")
+        logger.info('服务已停止')
 
 
 if __name__ == '__main__':
