@@ -1001,6 +1001,113 @@ async def get_suggestion(request: SuggestionRequest):
 # 后台任务执行
 # ============================================================
 
+def _build_backtest_data_from_db(stock_pool: list, start_date: str, end_date: str) -> dict:
+    """
+    从数据库快速构建回测所需的 market_data_by_date。
+
+    优先使用数据库（SQLite），比从 AKShare 实时拉取快 100 倍以上。
+    返回格式: {date_str: {ts_code: {close, open, high, low, volume, ma5, ...}}}
+    """
+    import pandas as pd
+    from datetime import timedelta
+
+    try:
+        db = SQLiteManager()
+    except Exception:
+        return {}
+
+    # 扩展前导期（计算 MA60 等需要历史数据）
+    start_dt = datetime.strptime(start_date, '%Y%m%d')
+    extended_start = (start_dt - timedelta(days=180)).strftime('%Y%m%d')
+
+    market_data = {}
+    loaded = 0
+
+    for code in stock_pool:
+        ts_code = f"{code}.SH" if str(code).startswith('6') else f"{code}.SZ"
+        try:
+            bars = db.get_daily_bars(ts_code, extended_start, end_date)
+            if len(bars) < 20:
+                continue
+
+            loaded += 1
+            df = pd.DataFrame(bars)
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            close = df['close']
+            volume = df['volume'] if 'volume' in df.columns else close * 100
+
+            # 计算技术指标
+            df['ma5'] = close.rolling(5, min_periods=1).mean()
+            df['ma10'] = close.rolling(10, min_periods=1).mean()
+            df['ma20'] = close.rolling(20, min_periods=1).mean()
+            df['ma60'] = close.rolling(60, min_periods=1).mean()
+            df['volume_ma20'] = volume.rolling(20, min_periods=1).mean()
+            df['return_1d'] = close.pct_change(1)
+            df['return_5d'] = close.pct_change(5)
+            df['return_20d'] = close.pct_change(20)
+            df['return_60d'] = close.pct_change(60)
+            ret = close.pct_change()
+            df['volatility'] = ret.rolling(20, min_periods=5).std()
+
+            # 股票信息
+            info = db.get_stock_info(ts_code)
+            pe = info.get('pe', 20) if info else 20
+            pb = info.get('pb', 3) if info else 3
+            name = info.get('name', code) if info else code
+            industry = info.get('industry', '未知') if info else '未知'
+
+            for _, row in df.iterrows():
+                date_str = str(row['trade_date']).replace('-', '')[:8]
+                if date_str < start_date:
+                    continue
+                if date_str not in market_data:
+                    market_data[date_str] = {}
+
+                market_data[date_str][ts_code] = {
+                    'ts_code': ts_code,
+                    'close': row.get('close', 0) or 0,
+                    'open': row.get('open', 0) or 0,
+                    'high': row.get('high', 0) or 0,
+                    'low': row.get('low', 0) or 0,
+                    'volume': row.get('volume', 0) or 0,
+                    'amount': row.get('amount', 0) or 0,
+                    'turnover': row.get('turnover', 0) or 0,
+                    'pct_chg': row.get('pct_chg', 0) or 0,
+                    'ma5': row.get('ma5'),
+                    'ma10': row.get('ma10'),
+                    'ma20': row.get('ma20'),
+                    'ma60': row.get('ma60'),
+                    'volume_ma20': row.get('volume_ma20'),
+                    'return_1d': row.get('return_1d'),
+                    'return_5d': row.get('return_5d'),
+                    'return_20d': row.get('return_20d'),
+                    'return_60d': row.get('return_60d'),
+                    'volatility': row.get('volatility'),
+                    'pe': pe, 'pb': pb,
+                    'ep': 1 / pe if pe and pe > 0 else 0,
+                    'roe': 0,
+                    'name': name,
+                    'industry': industry,
+                    'market_cap': info.get('market_cap', 0) if info else 0,
+                    'profit_growth': 0,
+                    'revenue_growth': 0,
+                    'accrual_ratio': 0,
+                    'price_percentile_1y': 0,
+                }
+        except Exception:
+            continue
+
+    db.close()
+
+    if loaded > 0:
+        print(f"[回测] 从数据库加载 {loaded} 只股票, {len(market_data)} 个交易日")
+
+    return market_data
+
+
 def execute_backtest(task_id: str, request: BacktestRequest):
     """执行回测（后台任务）"""
     try:
@@ -1009,18 +1116,24 @@ def execute_backtest(task_id: str, request: BacktestRequest):
         tasks[task_id]["message"] = "正在获取数据..."
         tasks[task_id]["progress"] = 0.1
 
-        # 获取数据
-        cache_filename = f'market_data_{request.start_date}_{request.end_date}_{len(request.stock_pool)}stocks'
-        market_data = data_cache.load_market_data(cache_filename)
+        # 获取数据（优先使用数据库，快速且离线可用）
+        market_data = _build_backtest_data_from_db(request.stock_pool, request.start_date, request.end_date)
 
-        if not market_data or not isinstance(market_data, dict) or len(market_data) < 50:
-            tasks[task_id]["message"] = "正在从AKShare获取数据..."
+        if not market_data or len(market_data) == 0:
+            # 数据库没有数据，尝试 JSON 缓存
+            cache_filename = f'market_data_{request.start_date}_{request.end_date}_{len(request.stock_pool)}stocks'
+            market_data = data_cache.load_market_data(cache_filename)
+
+        if not market_data or not isinstance(market_data, dict) or len(market_data) < 10:
+            # 最后才从 AKShare 获取（慢）
+            tasks[task_id]["message"] = "正在从网络获取数据（首次较慢）..."
             market_data = data_fetcher.build_market_data_by_date(
                 request.stock_pool,
                 request.start_date,
                 request.end_date
             )
             if market_data:
+                cache_filename = f'market_data_{request.start_date}_{request.end_date}_{len(request.stock_pool)}stocks'
                 data_cache.save_market_data(market_data, cache_filename)
 
         if not market_data or len(market_data) == 0:

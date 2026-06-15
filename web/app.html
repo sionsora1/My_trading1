@@ -1431,11 +1431,23 @@ async function runBacktest() {
 }
 
 async function btPollTask() {
-    for (let i = 0; i < 180; i++) {
-        await new Promise(r => setTimeout(r, 1500));
+    let consecutiveErrors = 0;
+    for (let i = 0; i < 300; i++) {
+        await new Promise(r => setTimeout(r, 2000));
         try {
             const resp = await fetch(API_BASE + '/tasks/' + btCurrentTaskId);
+            if (!resp.ok) {
+                consecutiveErrors++;
+                console.warn(`[回测轮询] HTTP ${resp.status}, 连续错误: ${consecutiveErrors}`);
+                if (consecutiveErrors >= 10) {
+                    document.getElementById('bt-loading-card').style.display = 'none';
+                    showToast('回测请求失败 (HTTP ' + resp.status + ')', 'error');
+                    return;
+                }
+                continue;
+            }
             const json = await resp.json();
+            consecutiveErrors = 0;
             if (json.status !== 'success') continue;
             const task = json.data;
             document.getElementById('bt-progress-msg').textContent = task.message || '处理中...';
@@ -1454,10 +1466,18 @@ async function btPollTask() {
                 showToast('回测失败: ' + (task.message||''), 'error');
                 return;
             }
-        } catch(e) {}
+        } catch(e) {
+            consecutiveErrors++;
+            console.warn(`[回测轮询] 网络错误: ${e.message}, 连续错误: ${consecutiveErrors}`);
+            if (consecutiveErrors >= 10) {
+                document.getElementById('bt-loading-card').style.display = 'none';
+                showToast('网络错误，请检查服务器是否运行', 'error');
+                return;
+            }
+        }
     }
     document.getElementById('bt-loading-card').style.display = 'none';
-    showToast('回测超时', 'error');
+    showToast('回测超时（已等待10分钟），可能是数据量太大，请减少股票数量或缩短时间范围', 'error');
 }
 
 // ============================================================
