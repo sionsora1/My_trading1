@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Body
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -247,6 +247,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 静态文件配置
+web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+app.mount("/static", StaticFiles(directory=web_dir), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """主页"""
+    index_path = os.path.join(web_dir, "index.html")
+    with open(index_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read())
+
+
+@app.get("/{filename}.html", response_class=HTMLResponse)
+async def serve_html(filename: str):
+    """提供HTML页面"""
+    file_path = os.path.join(web_dir, f"{filename}.html")
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    raise HTTPException(status_code=404, detail="Page not found")
 
 
 # ============================================================
@@ -1603,6 +1625,175 @@ async def mark_checklist_skipped(item_id: str):
     if item:
         return {"status": "success", "data": item}
     return {"status": "error", "message": f"找不到 {item_id}"}
+
+# ============================================================
+# 数据库浏览器 API
+# ============================================================
+
+@app.get("/api/db/stats")
+async def get_db_stats():
+    """获取数据库统计信息"""
+    try:
+        db = SQLiteManager()
+        codes = db.get_all_stock_codes()
+
+        # 获取记录数和日期范围
+        total_records = 0
+        date_range = {'min': '99999999', 'max': '00000000'}
+        industries = set()
+
+        for code in codes:
+            ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+            info = db.get_stock_info(ts_code)
+            if info and info.get('industry'):
+                industries.add(info['industry'])
+
+            # 查询记录数和日期范围
+            try:
+                bars = db.get_daily_bars(ts_code, '20200101', '20261231')
+                total_records += len(bars)
+                if bars:
+                    first_date = bars[0].get('trade_date', '')
+                    last_date = bars[-1].get('trade_date', '')
+                    if first_date and first_date < date_range['min']:
+                        date_range['min'] = first_date
+                    if last_date and last_date > date_range['max']:
+                        date_range['max'] = last_date
+            except Exception:
+                pass
+
+        db.close()
+
+        return {
+            'total_stocks': len(codes),
+            'total_records': total_records,
+            'industries': len(industries),
+            'date_range': f"{date_range['min'][:4]}-{date_range['min'][4:6]} ~ {date_range['max'][:4]}-{date_range['max'][4:6]}" if date_range['min'] != '99999999' else '-'
+        }
+    except Exception as e:
+        return {'error': str(e), 'total_stocks': 0, 'total_records': 0, 'industries': 0, 'date_range': '-'}
+
+
+@app.get("/api/db/stocks")
+async def get_db_stocks():
+    """获取所有股票列表（含记录数、最新日期、最新收盘价）"""
+    try:
+        db = SQLiteManager()
+        codes = db.get_all_stock_codes()
+        stocks = []
+
+        for code in codes:
+            ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+            info = db.get_stock_info(ts_code)
+
+            # 获取最新数据
+            try:
+                bars = db.get_daily_bars(ts_code, '20240101', '20261231')
+                records = len(bars)
+                latest_date = bars[-1].get('trade_date', '') if bars else ''
+                latest_close = bars[-1].get('close', 0) if bars else 0
+            except Exception:
+                records = 0
+                latest_date = ''
+                latest_close = 0
+
+            stocks.append({
+                'code': code,
+                'ts_code': ts_code,
+                'name': info.get('name', code) if info else code,
+                'industry': info.get('industry', '') if info else '',
+                'records': records,
+                'latest_date': latest_date,
+                'latest_close': latest_close
+            })
+
+        db.close()
+        return {'stocks': stocks, 'total': len(stocks)}
+    except Exception as e:
+        return {'error': str(e), 'stocks': [], 'total': 0}
+
+
+@app.get("/api/db/kline/{code}")
+async def get_db_kline(
+    code: str,
+    start_date: str = Query(default='20240101', description='开始日期 YYYYMMDD'),
+    end_date: str = Query(default='20251231', description='结束日期 YYYYMMDD'),
+):
+    """获取股票K线数据（含技术指标）"""
+    try:
+        db = SQLiteManager()
+        ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+
+        info = db.get_stock_info(ts_code)
+        if not info:
+            db.close()
+            raise HTTPException(status_code=404, detail=f"股票 {code} 不在数据库中")
+
+        bars = db.get_daily_bars(ts_code, start_date, end_date)
+        db.close()
+
+        if not bars:
+            return {'code': code, 'ts_code': ts_code, 'name': info.get('name', code), 'bars': [], 'count': 0}
+
+        # 计算技术指标
+        closes = [b['close'] for b in bars]
+        volumes = [b['volume'] for b in bars]
+
+        for i, bar in enumerate(bars):
+            # MA5
+            if i >= 4:
+                bar['ma5'] = sum(closes[i-4:i+1]) / 5
+            else:
+                bar['ma5'] = None
+
+            # MA10
+            if i >= 9:
+                bar['ma10'] = sum(closes[i-9:i+1]) / 10
+            else:
+                bar['ma10'] = None
+
+            # MA20
+            if i >= 19:
+                bar['ma20'] = sum(closes[i-19:i+1]) / 20
+            else:
+                bar['ma20'] = None
+
+            # MA60
+            if i >= 59:
+                bar['ma60'] = sum(closes[i-59:i+1]) / 60
+            else:
+                bar['ma60'] = None
+
+        # 格式化输出
+        result_bars = []
+        for b in bars:
+            result_bars.append({
+                'date': b['trade_date'],
+                'open': round(b['open'], 2),
+                'high': round(b['high'], 2),
+                'low': round(b['low'], 2),
+                'close': round(b['close'], 2),
+                'volume': b['volume'],
+                'pct_chg': round(b.get('pct_chg', 0) or 0, 2),
+                'ma5': round(b['ma5'], 2) if b['ma5'] else None,
+                'ma10': round(b['ma10'], 2) if b['ma10'] else None,
+                'ma20': round(b['ma20'], 2) if b['ma20'] else None,
+                'ma60': round(b['ma60'], 2) if b['ma60'] else None,
+            })
+
+        return {
+            'code': code,
+            'ts_code': ts_code,
+            'name': info.get('name', code),
+            'industry': info.get('industry', ''),
+            'bars': result_bars,
+            'count': len(result_bars)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ============================================================
 # v2.0 Web API Router

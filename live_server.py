@@ -555,6 +555,7 @@ class LiveTradingServer:
             account = self.broker.get_account()
             positions = self.broker.get_positions()
             portfolio = self.broker.get_account_summary()
+            portfolio['cash'] = portfolio.get('available_cash', account.available_cash)
             portfolio['positions'] = {
                 k: {
                     'ts_code': v.ts_code,
