@@ -23,6 +23,162 @@
       "create_time": "2026-06-08 17:45:00",
       "confirmed": true,
       "executed": false
+    },
+    {
+      "ts_code": "000568",
+      "name": "泸州老窖",
+      "signal": "BUY",
+      "weight": 0.15,
+      "reason": "趋势跟随（得分0.20）",
+      "price": 84.6,
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "create_time": "2026-06-15 13:52:06",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "000681",
+      "name": "视觉中国",
+      "signal": "BUY",
+      "weight": 0.15,
+      "reason": "趋势跟随（得分0.20）",
+      "price": 22.15,
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "create_time": "2026-06-15 13:52:06",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "000425",
+      "name": "徐工机械",
+      "signal": "BUY",
+      "weight": 0.15,
+      "reason": "趋势跟随（得分0.20）",
+      "price": 9.29,
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "create_time": "2026-06-15 13:52:06",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "000630",
+      "name": "铜陵有色",
+      "signal": "BUY",
+      "weight": 0.15,
+      "reason": "趋势跟随（得分0.20）",
+      "price": 7.59,
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "create_time": "2026-06-15 13:52:06",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "000831",
+      "name": "中国稀土",
+      "signal": "BUY",
+      "weight": 0.15,
+      "reason": "趋势跟随（得分0.80）",
+      "price": 56.04,
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "create_time": "2026-06-15 14:15:47",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "603986",
+      "name": "兆易创新",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "动量策略（20日涨幅28.46%）",
+      "price": 481.47,
+      "strategy": "MomentumStrategy",
+      "create_time": "2026-06-15 14:15:16",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "002436",
+      "name": "兴森科技",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "动量策略（20日涨幅20.15%）",
+      "price": 37.8,
+      "strategy": "MomentumStrategy",
+      "create_time": "2026-06-15 14:15:16",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "600176",
+      "name": "中国巨石",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "动量策略（20日涨幅23.47%）",
+      "price": 41.61,
+      "strategy": "MomentumStrategy",
+      "create_time": "2026-06-15 14:15:16",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "002897",
+      "name": "意华股份",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "动量策略（20日涨幅16.73%）",
+      "price": 78.98,
+      "strategy": "MomentumStrategy",
+      "create_time": "2026-06-15 14:15:16",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "603256",
+      "name": "宏和科技",
+      "signal": "BUY",
+      "weight": 0.05,
+      "reason": "动量策略（20日涨幅55.08%）",
+      "price": 207.89,
+      "strategy": "MomentumStrategy",
+      "create_time": "2026-06-15 14:15:16",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "600176",
+      "name": "中国巨石",
+      "signal": "BUY",
+      "weight": 0.15,
+      "reason": "趋势跟随（得分1.00）",
+      "price": 41.61,
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "create_time": "2026-06-15 14:15:47",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "300502",
+      "name": "新易盛",
+      "signal": "BUY",
+      "weight": 0.15,
+      "reason": "趋势跟随（得分0.85）",
+      "price": 506.46,
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "create_time": "2026-06-15 14:15:47",
+      "confirmed": false,
+      "executed": false
+    },
+    {
+      "ts_code": "603256",
+      "name": "宏和科技",
+      "signal": "BUY",
+      "weight": 0.15,
+      "reason": "趋势跟随（得分0.90）",
+      "price": 207.89,
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "create_time": "2026-06-15 14:15:47",
+      "confirmed": false,
+      "executed": false
     }
   ],
   "history": [
@@ -125,16 +281,126 @@
       "executed": false,
       "time": "2026-06-08 11:54:26",
       "action_time": "2026-06-14 13:30:30"
+    },
+    {
+      "ts_code": "000425",
+      "name": "徐工机械",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:45:53",
+      "action_time": "2026-06-15 13:46:06"
+    },
+    {
+      "ts_code": "000568",
+      "name": "泸州老窖",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:45:53",
+      "action_time": "2026-06-15 13:46:07"
+    },
+    {
+      "ts_code": "000630",
+      "name": "铜陵有色",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:45:53",
+      "action_time": "2026-06-15 13:46:08"
+    },
+    {
+      "ts_code": "000681",
+      "name": "视觉中国",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:45:53",
+      "action_time": "2026-06-15 13:46:08"
+    },
+    {
+      "ts_code": "000831",
+      "name": "中国稀土",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:45:53",
+      "action_time": "2026-06-15 13:46:09"
+    },
+    {
+      "ts_code": "000425",
+      "name": "徐工机械",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:46:13",
+      "action_time": "2026-06-15 13:49:20"
+    },
+    {
+      "ts_code": "000568",
+      "name": "泸州老窖",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:46:13",
+      "action_time": "2026-06-15 13:49:21"
+    },
+    {
+      "ts_code": "000630",
+      "name": "铜陵有色",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:46:13",
+      "action_time": "2026-06-15 13:49:21"
+    },
+    {
+      "ts_code": "000681",
+      "name": "视觉中国",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:46:13",
+      "action_time": "2026-06-15 13:49:22"
+    },
+    {
+      "ts_code": "000831",
+      "name": "中国稀土",
+      "signal": "BUY",
+      "reason": "趋势跟随（得分0.20）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "confirmed": false,
+      "executed": false,
+      "time": "2026-06-15 13:46:13",
+      "action_time": "2026-06-15 13:49:22"
     }
   ],
   "stats": {
-    "pending": 2,
-    "buy_signals": 1,
+    "pending": 15,
+    "buy_signals": 14,
     "sell_signals": 1,
     "hold_signals": 0,
     "confirmed": 2,
-    "unconfirmed": 0,
-    "total_history": 9
+    "unconfirmed": 13,
+    "total_history": 19
   },
-  "last_update": "2026-06-14 13:30:30"
+  "last_update": "2026-06-15 14:15:47"
 }

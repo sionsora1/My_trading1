@@ -119,13 +119,17 @@ class SignalBus:
         strategies: list
     ) -> List[dict]:
         """① collect: 遍历策略收集信号"""
+        import logging
+        logger = logging.getLogger("server")
+
         all_signals = []
         for strategy in strategies:
             try:
                 signals = strategy.generate_signals(date, market_data, portfolio)
+                strategy_name = getattr(strategy, 'name', strategy.__class__.__name__)
+                logger.info(f"[SignalBus] 策略 {strategy_name} 生成 {len(signals) if signals else 0} 条原始信号")
                 if not signals:
                     continue
-                strategy_name = getattr(strategy, 'name', strategy.__class__.__name__)
                 for sig in signals:
                     # 确保必要字段存在
                     sig['strategy'] = sig.get('strategy', strategy_name)
@@ -180,6 +184,8 @@ class SignalBus:
         risk_manager=None
     ) -> List[dict]:
         """③ risk_filter: 涨跌停 / 持仓数量 / 最小金额检查"""
+        import logging
+        logger = logging.getLogger("server")
         positions = portfolio.get('positions', {})
         total_assets = portfolio.get('total_assets', self._calc_total_assets(portfolio))
         cash = portfolio.get('cash', 0)
@@ -224,6 +230,7 @@ class SignalBus:
             else:
                 sig['filter_status'] = 'rejected'
                 sig['filter_reason'] = reason
+                logger.info(f"[SignalBus] 信号被过滤: {ts_code} {direction} 原因: {reason}")
                 # 被拒绝的信号也记录
                 sid = sig.get('signal_id', self._make_id())
                 if sid not in self._all_signals:

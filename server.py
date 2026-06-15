@@ -5,7 +5,50 @@ A股量化交易系统 - 后端服务
 
 import sys
 import os
+import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# ============================================================
+# 日志配置 — 同时输出到控制台和文件
+# ============================================================
+
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / "server.log"
+
+def setup_logging():
+    """配置全局日志：控制台 + 滚动文件（单文件 5MB，保留 5 个）"""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    if root.handlers:
+        return  # 已配置过
+
+    fmt = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # 控制台
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    # 滚动文件：5MB/个，保留5个（最多 ~25MB）
+    file_handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(fmt)
+    root.addHandler(file_handler)
+
+setup_logging()
+logger = logging.getLogger("server")
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,7 +97,7 @@ def check_and_init_data(db, calendar, fetcher):
     try:
         cal_count = db.calendar_row_count()
         if cal_count == 0:
-            print("[Init] 正在加载交易日历...")
+            logger.info("[Init] 正在加载交易日历...")
             calendar.sync_to_db()
             status['calendar'] = 'synced'
         else:
@@ -66,7 +109,7 @@ def check_and_init_data(db, calendar, fetcher):
     try:
         daily_count = db._conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
         if daily_count == 0:
-            print("[Init] 日线数据为空 — 从 JSON cache 同步...")
+            logger.info("[Init] 日线数据为空 — 从 JSON cache 同步...")
             sync_result = db.sync_from_cache()
             status['daily_bars'] = f"synced {sync_result['daily_bars']} rows"
         else:
@@ -78,7 +121,7 @@ def check_and_init_data(db, calendar, fetcher):
     try:
         stock_count = db._conn.execute("SELECT COUNT(*) FROM stock_info").fetchone()[0]
         if stock_count == 0:
-            print("[Init] 正在获取股票基本信息...")
+            logger.info("[Init] 正在获取股票基本信息...")
             try:
                 df = fetcher.get_stock_list()
                 if df is not None and not df.empty:
@@ -132,7 +175,7 @@ async def market_scheduler(live_server, db, fetcher, calendar):
 
             # --- 09:25 盘前准备 ---
             if time(9, 25) <= current_time < time(9, 30):
-                print("[Scheduler] 盘前准备...")
+                logger.info("[Scheduler] 盘前准备...")
                 try:
                     stock_pool = live_server.config.get('scan', {}).get('stock_pool', [])
                     if stock_pool:
@@ -140,7 +183,7 @@ async def market_scheduler(live_server, db, fetcher, calendar):
                         fetcher.fetch_and_store_minute_bars(stock_pool, db, period='5')
                     live_server.update_market_prices()
                 except Exception as e:
-                    print(f"[Scheduler] 盘前准备失败: {e}")
+                    logger.error(f"[Scheduler] 盘前准备失败: {e}")
                 await asyncio.sleep(60)
 
             # --- 09:30-15:00 盘中扫描 ---
@@ -148,12 +191,12 @@ async def market_scheduler(live_server, db, fetcher, calendar):
                 try:
                     await asyncio.to_thread(live_server.scan_and_trade)
                 except Exception as e:
-                    print(f"[Scheduler] 盘中扫描失败: {e}")
+                    logger.error(f"[Scheduler] 盘中扫描失败: {e}")
                 await asyncio.sleep(60)
 
             # --- 15:00-15:30 收盘处理 ---
             elif time(15, 0) <= current_time < time(15, 30):
-                print("[Scheduler] 收盘处理...")
+                logger.info("[Scheduler] 收盘处理...")
                 try:
                     stock_pool = live_server.config.get('scan', {}).get('stock_pool', [])
                     if stock_pool:
@@ -191,10 +234,10 @@ async def market_scheduler(live_server, db, fetcher, calendar):
                                 acc.market_value, snapshot['positions']
                             )
                     except Exception as e:
-                        print(f"[Scheduler] 绩效快照失败: {e}")
+                        logger.warning(f"[Scheduler] 绩效快照失败: {e}")
 
                 except Exception as e:
-                    print(f"[Scheduler] 收盘处理失败: {e}")
+                    logger.error(f"[Scheduler] 收盘处理失败: {e}")
                 await asyncio.sleep(300)
 
             # --- 非交易时段 ---
@@ -202,7 +245,7 @@ async def market_scheduler(live_server, db, fetcher, calendar):
                 await asyncio.sleep(300)
 
         except Exception as e:
-            print(f"[Scheduler] 调度异常: {e}")
+            logger.error(f"[Scheduler] 调度异常: {e}")
             await asyncio.sleep(60)
 
 
@@ -216,7 +259,7 @@ calendar = TradeCalendar(db)
 
 # Run data initialization check
 init_status = check_and_init_data(db, calendar, DataFetcher())
-print(f"[Server] Data status: {init_status}")
+logger.info(f"[Server] Data status: {init_status}")
 
 # SignalBus
 signal_bus = SignalBus(SIGNAL_BUS_CONFIG)
@@ -600,19 +643,19 @@ async def get_backtest_result(task_id: str):
 @app.get("/api/results/{task_id}/daily")
 async def get_daily_operations(task_id: str, strategy: str = "eight_factor", date: Optional[str] = None):
     """获取每日操作详情"""
-    print(f"[DEBUG] daily endpoint called: task_id={task_id}, strategy={strategy}, date={date}")
-    print(f"[DEBUG] results keys: {list(results.keys())}")
+    logger.debug(f"daily endpoint called: task_id={task_id}, strategy={strategy}, date={date}")
+    logger.debug(f"results keys: {list(results.keys())}")
 
     if task_id not in results:
         raise HTTPException(status_code=404, detail="结果不存在")
 
     result = results[task_id]
-    print(f"[DEBUG] result keys: {list(result.keys())}")
+    logger.debug(f"result keys: {list(result.keys())}")
 
     # 从strategy_results获取数据
     strategy_results = result.get("strategy_results", {})
-    print(f"[DEBUG] strategy_results keys: {list(strategy_results.keys())}")
-    print(f"[DEBUG] strategy '{strategy}' in strategy_results: {strategy in strategy_results}")
+    logger.debug(f"strategy_results keys: {list(strategy_results.keys())}")
+    logger.debug(f"strategy '{strategy}' in strategy_results: {strategy in strategy_results}")
 
     # 选择策略
     if strategy not in strategy_results:
@@ -620,11 +663,11 @@ async def get_daily_operations(task_id: str, strategy: str = "eight_factor", dat
         strategy = list(strategy_results.keys())[0] if strategy_results else None
 
     if not strategy or strategy not in strategy_results:
-        print(f"[DEBUG] strategy not found, returning empty")
+        logger.debug("strategy not found, returning empty")
         return {"status": "success", "data": [] if not date else None}
 
     daily_ops = strategy_results[strategy].get("daily_operations", [])
-    print(f"[DEBUG] daily_ops length: {len(daily_ops)}")
+    logger.debug(f"daily_ops length: {len(daily_ops)}")
 
     if date:
         # 返回指定日期的操作
@@ -635,7 +678,7 @@ async def get_daily_operations(task_id: str, strategy: str = "eight_factor", dat
 
     # 返回所有日期列表
     dates = [op["date"] for op in daily_ops]
-    print(f"[DEBUG] returning dates: {dates}")
+    logger.debug(f"returning dates: {dates}")
     return {"status": "success", "data": dates}
 
 
@@ -1796,6 +1839,46 @@ async def get_db_kline(
 
 
 # ============================================================
+# 日志查看 API
+# ============================================================
+
+@app.get("/api/logs")
+async def get_logs(lines: int = 200, level: Optional[str] = None):
+    """查看最近 N 行日志（默认 200 行，可按 level 过滤）"""
+    try:
+        if not LOG_FILE.exists():
+            return {"status": "success", "data": {"lines": [], "total": 0, "file": str(LOG_FILE)}}
+
+        with open(LOG_FILE, 'r', encoding='utf-8', errors='replace') as f:
+            all_lines = f.readlines()
+
+        if level:
+            level_upper = level.upper()
+            all_lines = [l for l in all_lines if f'[{level_upper}]' in l]
+
+        recent = all_lines[-lines:]
+        return {
+            "status": "success",
+            "data": {
+                "lines": [l.rstrip() for l in recent],
+                "total": len(all_lines),
+                "showing": len(recent),
+                "file": str(LOG_FILE),
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/logs/download")
+async def download_log():
+    """下载完整日志文件"""
+    if not LOG_FILE.exists():
+        raise HTTPException(status_code=404, detail="日志文件不存在")
+    return FileResponse(LOG_FILE, media_type="text/plain", filename="server.log")
+
+
+# ============================================================
 # v2.0 Web API Router
 # ============================================================
 
@@ -1822,30 +1905,71 @@ if __name__ == "__main__":
     except Exception:
         lan_ip = '127.0.0.1'
 
-    print("=" * 60)
-    print("A股量化交易系统 - 后端服务")
-    print("=" * 60)
-    print()
-    print("  本地访问:")
-    print("    主页导航:   http://localhost:8000")
-    print("    回测分析:   http://localhost:8000/app.html")
-    print("    实盘交易:   http://localhost:8000/live.html")
-    print("    手机看信号: http://localhost:8000/mobile.html")
-    print("    K线策略可视化: http://localhost:8000/kline_vis.html")
-    print("    API文档:    http://localhost:8000/docs")
+    banner = f"""
+============================================================
+A股量化交易系统 - 后端服务
+============================================================
+
+  本地访问:
+    主页导航:   http://localhost:8000
+    回测分析:   http://localhost:8000/app.html
+    实盘交易:   http://localhost:8000/live.html
+    手机看信号: http://localhost:8000/mobile.html
+    K线策略可视化: http://localhost:8000/kline_vis.html
+    API文档:    http://localhost:8000/docs
+"""
     if lan_ip and lan_ip != '127.0.0.1':
-        print()
-        print("  手机扫码访问:")
-        print(f"    http://{lan_ip}:8000/mobile.html")
-        print(f"    (手机和电脑需在同一WiFi)")
-    print()
-    print("  按 Ctrl+C 停止服务")
-    print()
+        banner += f"""
+  手机扫码访问:
+    http://{lan_ip}:8000/mobile.html
+    (手机和电脑需在同一WiFi)
+"""
+    banner += f"""
+  日志文件: {LOG_FILE}
+
+  按 Ctrl+C 停止服务
+"""
+    logger.info("服务启动中...")
+    print(banner)
 
     uvicorn.run(
         "server:app",
         host="0.0.0.0",
         port=8000,
         reload=False,
-        workers=1
+        workers=1,
+        log_config={
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "fmt": "%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+                    "datefmt": "%Y-%m-%d %H:%M:%S",
+                },
+            },
+            "handlers": {
+                "default": {
+                    "class": "logging.StreamHandler",
+                    "formatter": "default",
+                    "stream": "ext://sys.stdout",
+                },
+                "file": {
+                    "class": "logging.handlers.RotatingFileHandler",
+                    "formatter": "default",
+                    "filename": str(LOG_FILE),
+                    "maxBytes": 5 * 1024 * 1024,
+                    "backupCount": 5,
+                    "encoding": "utf-8",
+                },
+            },
+            "root": {
+                "level": "INFO",
+                "handlers": ["default", "file"],
+            },
+            "loggers": {
+                "uvicorn": {"level": "INFO", "handlers": ["default", "file"], "propagate": False},
+                "uvicorn.error": {"level": "INFO", "handlers": ["default", "file"], "propagate": False},
+                "uvicorn.access": {"level": "INFO", "handlers": ["default", "file"], "propagate": False},
+            },
+        },
     )

@@ -1,5 +1,82 @@
 {
-  "items": [],
+  "items": [
+    {
+      "id": "CK001",
+      "ts_code": "600176",
+      "name": "中国巨石",
+      "action": "买入",
+      "signal": "BUY",
+      "suggested_price": 41.61,
+      "suggested_quantity": 300,
+      "reason": "趋势跟随（得分1.00）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "weight": 0.15,
+      "note": "建议买入300股（约15,000元，仓位15%）",
+      "status": "pending",
+      "created_at": "2026-06-15 14:15:47",
+      "executed_at": "",
+      "actual_price": 0,
+      "actual_quantity": 0,
+      "actual_amount": 0
+    },
+    {
+      "id": "CK002",
+      "ts_code": "000831",
+      "name": "中国稀土",
+      "action": "买入",
+      "signal": "BUY",
+      "suggested_price": 56.04,
+      "suggested_quantity": 200,
+      "reason": "趋势跟随（得分0.80）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "weight": 0.15,
+      "note": "建议买入200股（约15,000元，仓位15%）",
+      "status": "pending",
+      "created_at": "2026-06-15 14:15:47",
+      "executed_at": "",
+      "actual_price": 0,
+      "actual_quantity": 0,
+      "actual_amount": 0
+    },
+    {
+      "id": "CK003",
+      "ts_code": "300502",
+      "name": "新易盛",
+      "action": "买入",
+      "signal": "BUY",
+      "suggested_price": 506.46,
+      "suggested_quantity": 100,
+      "reason": "趋势跟随（得分0.85）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "weight": 0.15,
+      "note": "建议买入100股（约15,000元，仓位15%）",
+      "status": "pending",
+      "created_at": "2026-06-15 14:15:47",
+      "executed_at": "",
+      "actual_price": 0,
+      "actual_quantity": 0,
+      "actual_amount": 0
+    },
+    {
+      "id": "CK004",
+      "ts_code": "603256",
+      "name": "宏和科技",
+      "action": "买入",
+      "signal": "BUY",
+      "suggested_price": 207.89,
+      "suggested_quantity": 100,
+      "reason": "趋势跟随（得分0.90）",
+      "strategy": "EnhancedTrendFollowingStrategy",
+      "weight": 0.15,
+      "note": "建议买入100股（约15,000元，仓位15%）",
+      "status": "pending",
+      "created_at": "2026-06-15 14:15:47",
+      "executed_at": "",
+      "actual_price": 0,
+      "actual_quantity": 0,
+      "actual_amount": 0
+    }
+  ],
   "history": [
     {
       "id": "CK001",
@@ -60,15 +137,15 @@
     }
   ],
   "summary": {
-    "total": 0,
-    "pending": 0,
+    "total": 4,
+    "pending": 4,
     "executed": 0,
     "skipped": 0,
-    "buy_items": 0,
+    "buy_items": 4,
     "sell_items": 0,
     "total_buy_amount": 0,
     "total_sell_amount": 0,
-    "updated_at": "2026-06-15 13:35:09"
+    "updated_at": "2026-06-15 14:15:47"
   },
-  "last_save": "2026-06-15 13:35:09"
+  "last_save": "2026-06-15 14:15:47"
 }

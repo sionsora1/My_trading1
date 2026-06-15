@@ -7,8 +7,11 @@ import sys
 import os
 import time
 import json
+import logging
 import threading
 from datetime import datetime, timedelta
+
+logger = logging.getLogger("server")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -540,6 +543,7 @@ class LiveTradingServer:
                 return {'status': 'skipped', 'reason': '未配置股票池', 'signals': [], 'trades': []}
 
             strategy_name = self.config.get('scan', {}).get('strategy', 'all')
+            logger.info(f"[Scan] 配置的策略: {strategy_name}")
 
             end_date = datetime.now().strftime('%Y%m%d')
             start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
@@ -548,8 +552,18 @@ class LiveTradingServer:
             if not market_data:
                 return {'status': 'skipped', 'reason': '获取行情数据失败', 'signals': [], 'trades': []}
 
-            latest_date = sorted(market_data.keys())[-1]
+            # 选择有完整衍生指标的最新日期（实时行情条目可能缺少 return_20d 等字段）
+            sorted_dates = sorted(market_data.keys(), reverse=True)
+            latest_date = None
+            for d in sorted_dates:
+                sample = next(iter(market_data[d].values()), {})
+                if sample.get('return_20d') is not None:
+                    latest_date = d
+                    break
+            if latest_date is None:
+                latest_date = sorted_dates[0]  # fallback
             latest_data = market_data[latest_date]
+            logger.info(f"[Scan] 使用日期: {latest_date} (共 {len(latest_data)} 只股票)")
 
             # 构建 portfolio 格式
             account = self.broker.get_account()
@@ -572,12 +586,31 @@ class LiveTradingServer:
             # v2.0: SignalBus 多策略信号总线（主要路径）
             # ============================================================
 
-            # 2. 市场环境检测 & 策略选择
-            regime = self._detect_market_regime(market_data, latest_date)
-            active_strategies, active_profile = self._get_active_strategies(regime)
+            # 2. 策略选择：用户指定 → 只用那一个；'all' → 根据市场环境自动组合
+            if strategy_name and strategy_name != 'all':
+                # 用户明确指定了策略，直接使用
+                try:
+                    single_strategy = get_strategy(strategy_name)
+                    active_strategies = [single_strategy]
+                    active_profile = {'strategies': [strategy_name], 'name': strategy_name}
+                except Exception as e:
+                    logger.error(f"策略 {strategy_name} 加载失败: {e}")
+                    active_strategies = []
+                    active_profile = {'strategies': [], 'name': strategy_name}
+                regime = None
+            else:
+                # 'all' 模式：根据市场环境自动选择策略组合
+                regime = self._detect_market_regime(market_data, latest_date)
+                active_strategies, active_profile = self._get_active_strategies(regime)
 
             signal_bus_signals = []
             if active_strategies:
+                # 调试：打印策略看到的数据样本
+                sample_codes = list(latest_data.keys())[:3]
+                for code in sample_codes:
+                    d = latest_data[code]
+                    logger.info(f"[Scan] 数据样本 {code}: close={d.get('close')}, return_20d={d.get('return_20d')}, ma20={d.get('ma20')}")
+
                 # 通过 SignalBus 生成信号（含去重、风控过滤、权重排序）
                 bus_results = self.signal_bus.process(
                     date=latest_date,
@@ -586,6 +619,8 @@ class LiveTradingServer:
                     strategies=active_strategies,
                     risk_manager=self.risk_manager,
                 )
+
+                logger.info(f"[Scan] 策略 {active_profile.get('name')} 原始信号数: {len(bus_results) if bus_results else 0}")
 
                 if bus_results:
                     for sig in bus_results:
