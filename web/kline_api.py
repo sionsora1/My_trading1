@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/kline", tags=["kline"])
 # ============================================================
 
 def compute_indicators(bars: list[dict]) -> list[dict]:
-    """在K线数据上计算MA、收益率等指标"""
+    """在K线数据上计算MA、收益率、高级技术指标"""
     closes = [b['close'] for b in bars]
     volumes = [b['volume'] for b in bars]
 
@@ -66,6 +66,10 @@ def compute_indicators(bars: list[dict]) -> list[dict]:
             bar['return_5d'] = (closes[i] - closes[i-4]) / closes[i-4]
         else:
             bar['return_5d'] = None
+
+    # 高级技术指标（MACD/RSI/BOLL/KDJ）
+    from utils.indicators import compute_advanced_indicators as _adv
+    _adv(bars)
 
     return bars
 

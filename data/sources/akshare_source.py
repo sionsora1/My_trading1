@@ -159,6 +159,107 @@ class AKShareDataSource(BaseDataSource):
         return results
 
     # ============================================================
+    # 买卖五档盘口
+    # ============================================================
+
+    def get_order_depth(self, code: str) -> dict | None:
+        """
+        获取单只股票的买卖五档盘口数据
+
+        Args:
+            code: 6位股票代码，如 '600519'
+
+        Returns:
+            {code, name, price, pre_close, change_pct,
+             bids: [{price, volume} x5], asks: [{price, volume} x5],
+             time, status}
+            或 None（非交易时段或请求失败）
+        """
+        import requests as req
+        import random as rnd
+
+        # 构造东方财富市场代码
+        if code.startswith('6'):
+            secid = f'1.{code}'
+            market = 1
+        else:
+            secid = f'0.{code}'
+            market = 0
+
+        try:
+            session = req.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'zh-CN,zh;q=0.9',
+                'Referer': 'http://quote.eastmoney.com/',
+            })
+
+            # 东方财富个股快照 API — 包含买卖五档字段
+            # f19-f23: 卖一~卖五价, f24-f28: 买一~买五价
+            # f39-f43: 卖一~卖五量, f44-f48: 买一~买五量
+            fields = 'f2,f3,f12,f14,f15,f16,f17,f18,f19,f20,f21,f22,f23,f24,f25,f26,f27,f28,f39,f40,f41,f42,f43,f44,f45,f46,f47,f48,f86'
+            url = 'http://push2.eastmoney.com/api/qt/stock/get'
+            params = {
+                'fltt': '2',
+                'invt': '2',
+                'fields': fields,
+                'secid': secid,
+                '_': int(time.time() * 1000),
+            }
+
+            resp = session.get(url, params=params, timeout=8)
+            if resp.status_code != 200:
+                return None
+
+            data = resp.json()
+            if not data.get('data'):
+                return None
+
+            d = data['data']
+
+            # 解析买卖五档
+            asks = []
+            bids = []
+            ask_prices = [d.get(f'f{i}') for i in (19, 20, 21, 22, 23)]
+            ask_vols = [d.get(f'f{i}') for i in (39, 40, 41, 42, 43)]
+            bid_prices = [d.get(f'f{i}') for i in (24, 25, 26, 27, 28)]
+            bid_vols = [d.get(f'f{i}') for i in (44, 45, 46, 47, 48)]
+
+            for i in range(5):
+                ap = ask_prices[i]
+                av = ask_vols[i]
+                if ap and ap != '-':
+                    asks.append({'price': float(ap), 'volume': int(float(av)) if av and av != '-' else 0})
+
+                bp = bid_prices[i]
+                bv = bid_vols[i]
+                if bp and bp != '-':
+                    bids.append({'price': float(bp), 'volume': int(float(bv)) if bv and bv != '-' else 0})
+
+            if not asks and not bids:
+                return None  # 停牌或无数据
+
+            return {
+                'code': code,
+                'name': d.get('f14', ''),
+                'price': d.get('f2', 0) or 0,
+                'pre_close': d.get('f18', 0) or 0,
+                'change_pct': d.get('f3', 0) or 0,
+                'open': d.get('f17', 0) or 0,
+                'high': d.get('f15', 0) or 0,
+                'low': d.get('f16', 0) or 0,
+                'asks': asks,
+                'bids': bids,
+                'time': d.get('f86', ''),
+                'status': 'ok',
+            }
+
+        except Exception as e:
+            logger.warning(f'盘口数据获取失败 {code}: {e}')
+            return None
+
+    # ============================================================
     # 日线行情（多数据源支持）
     # ============================================================
 

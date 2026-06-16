@@ -195,6 +195,19 @@
         <span>风控: <strong id="statusRisk">--</strong></span>
     </div>
 
+    <!-- Monitor Bar -->
+    <div class="card" id="monitorBar" style="margin: 0 24px 12px 24px; padding: 12px 16px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-weight: 600;">📡 大单监控</span>
+            <button class="btn btn-primary btn-sm" id="btnMonitorStart" onclick="startMonitor()">▶ 开启</button>
+            <button class="btn btn-danger btn-sm" id="btnMonitorStop" onclick="stopMonitor()" style="display:none;">⏹ 停止</button>
+            <span style="font-size: 12px; color: var(--text-dim);" id="monitorStatus">未启动</span>
+            <span style="margin-left: auto; font-size: 12px; color: var(--text-dim);">
+                告警: <strong id="monitorAlertCount" style="color: var(--yellow);">0</strong> 条
+            </span>
+        </div>
+    </div>
+
     <div class="container">
         <!-- Controls -->
         <div class="card" style="margin-bottom: 16px; padding: 12px 20px;">
@@ -337,6 +350,7 @@
                 <div class="tabs">
                     <div class="tab active" onclick="switchTab('order')" id="tabOrder">✏️ 手动下单</div>
                     <div class="tab" onclick="switchTab('pool')" id="tabPool">📊 股票池 (<span id="poolCount">0</span>)</div>
+                    <div class="tab" onclick="switchTab('monitor')" id="tabMonitor">📡 大单监控 (<span id="monitorTabCount">0</span>)</div>
                 </div>
 
                 <!-- Order Form -->
@@ -399,6 +413,19 @@
                                 <tr><td colspan="4" class="text-dim" style="text-align:center;">-- 加载中 --</td></tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <!-- Monitor Panel -->
+                <div id="panelMonitor" class="tab-content" style="padding-top: 12px;">
+                    <div id="alertFilters" class="btn-group" style="margin-bottom: 12px;">
+                        <button class="btn btn-sm btn-primary" id="btnFilterAll" onclick="filterAlerts('all')">全部</button>
+                        <button class="btn btn-sm" id="btnFilterBuy" onclick="filterAlerts('buy')">🟢 仅买入</button>
+                        <button class="btn btn-sm" id="btnFilterSell" onclick="filterAlerts('sell')">🔴 仅卖出</button>
+                        <button class="btn btn-sm btn-danger" onclick="clearAlerts()" style="margin-left: auto;">🗑 清空</button>
+                    </div>
+                    <div style="max-height: 250px; overflow-y: auto;" id="alertList">
+                        <p class="text-dim" style="text-align:center; padding:40px;">-- 暂无大单告警 --</p>
                     </div>
                 </div>
             </div>
@@ -832,6 +859,156 @@
             URL.revokeObjectURL(url);
             showToast(`已导出 ${format.toUpperCase()} 文件`, 'success');
         }
+
+        // ========== Large Order Monitor ==========
+        let allAlerts = [];
+        let monitorEventSource = null;
+        let monitorFilter = 'all';
+
+        function getCurrentStockPool() {
+            const rows = document.querySelectorAll('#poolBody tr');
+            const codes = [];
+            rows.forEach(row => {
+                const firstCell = row.querySelector('td:first-child strong');
+                if (firstCell) codes.push(firstCell.textContent.trim());
+            });
+            return codes;
+        }
+
+        async function startMonitor() {
+            const stockPool = getCurrentStockPool();
+            if (stockPool.length === 0) {
+                showToast('股票池为空，无法启动监控', 'error');
+                return;
+            }
+
+            const r = await fetch('/api/monitor/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ stock_pool: stockPool })
+            }).then(res => res.json());
+            if (r.status === 'started') {
+                document.getElementById('btnMonitorStart').style.display = 'none';
+                document.getElementById('btnMonitorStop').style.display = '';
+                document.getElementById('monitorStatus').textContent = '运行中';
+                document.getElementById('monitorStatus').style.color = 'var(--green)';
+                connectSSE();
+                showToast('大单监控已启动', 'success');
+            } else {
+                showToast('启动失败: ' + (r.detail || '未知错误'), 'error');
+            }
+        }
+
+        async function stopMonitor() {
+            const r = await fetch('/api/monitor/stop', { method: 'POST' }).then(res => res.json());
+            document.getElementById('btnMonitorStart').style.display = '';
+            document.getElementById('btnMonitorStop').style.display = 'none';
+            document.getElementById('monitorStatus').textContent = '未启动';
+            document.getElementById('monitorStatus').style.color = 'var(--text-dim)';
+            if (monitorEventSource) {
+                monitorEventSource.close();
+                monitorEventSource = null;
+            }
+            if (r.status === 'stopped') {
+                showToast('大单监控已停止', 'info');
+            }
+        }
+
+        function connectSSE() {
+            if (monitorEventSource) monitorEventSource.close();
+            monitorEventSource = new EventSource('/api/monitor/stream');
+
+            monitorEventSource.addEventListener('alert', (event) => {
+                try {
+                    const alert = JSON.parse(event.data);
+                    alert._time = new Date().toLocaleTimeString();
+                    allAlerts.unshift(alert);
+                    document.getElementById('monitorAlertCount').textContent = allAlerts.length;
+                    document.getElementById('monitorTabCount').textContent = allAlerts.length;
+                    renderAlerts();
+                } catch(e) {
+                    console.error('SSE alert parse error:', e);
+                }
+            });
+
+            monitorEventSource.onerror = () => {
+                console.warn('Monitor SSE connection error, will retry...');
+            };
+        }
+
+        function renderAlerts() {
+            const container = document.getElementById('alertList');
+            let filtered = allAlerts;
+            if (monitorFilter === 'buy') {
+                filtered = allAlerts.filter(a => (a.side || a.direction) === 'BUY');
+            } else if (monitorFilter === 'sell') {
+                filtered = allAlerts.filter(a => (a.side || a.direction) === 'SELL');
+            }
+
+            if (!filtered.length) {
+                container.innerHTML = '<p class="text-dim" style="text-align:center; padding:40px;">-- 暂无大单告警 --</p>';
+                return;
+            }
+
+            container.innerHTML = filtered.map(a => {
+                const isBuy = (a.side || a.direction) === 'BUY';
+                const colorClass = isBuy ? 'text-green' : 'text-red';
+                const label = isBuy ? '买入' : '卖出';
+                return `
+                <div class="signal-row ${isBuy ? 'signal-buy' : 'signal-sell'}">
+                    <div class="signal-info">
+                        <div>
+                            <span class="signal-code">${a.ts_code || a.code || '--'}</span>
+                            <span class="signal-name">${a.name || '--'}</span>
+                            <span class="signal-meta"> | ${a._time || '--'}</span>
+                        </div>
+                        <div class="signal-reason">${a.reason || a.message || '--'}</div>
+                        <div class="signal-meta">
+                            <span class="${colorClass}">${isBuy ? '🟢' : '🔴'} ${label}</span>
+                            | 价格: ${(a.price || 0).toFixed(2)} | 数量: ${a.volume || a.quantity || '--'} | 金额: ${a.amount ? (a.amount/10000).toFixed(2) + '万' : '--'}
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function filterAlerts(type) {
+            monitorFilter = type;
+            document.querySelectorAll('#alertFilters .btn').forEach(b => b.classList.remove('btn-primary'));
+            const filterBtn = document.getElementById('btnFilter' + type.charAt(0).toUpperCase() + type.slice(1));
+            if (filterBtn) filterBtn.classList.add('btn-primary');
+            renderAlerts();
+        }
+
+        function clearAlerts() {
+            allAlerts = [];
+            document.getElementById('monitorAlertCount').textContent = '0';
+            document.getElementById('monitorTabCount').textContent = '0';
+            renderAlerts();
+            showToast('告警已清空', 'info');
+        }
+
+        // Monkey-patch switchTab to refresh monitor tab state
+        (function() {
+            const _origSwitchTab = switchTab;
+            switchTab = function(tab) {
+                _origSwitchTab(tab);
+                if (tab === 'monitor') {
+                    document.getElementById('monitorTabCount').textContent = allAlerts.length;
+                    // Load history on first visit
+                    if (allAlerts.length === 0) {
+                        fetch('/api/monitor/history?limit=100').then(r => r.json()).then(d => {
+                            if (d.alerts && d.alerts.length > 0) {
+                                allAlerts = d.alerts;
+                                document.getElementById('monitorAlertCount').textContent = d.alerts.length;
+                                document.getElementById('monitorTabCount').textContent = d.alerts.length;
+                                renderAlerts();
+                            }
+                        }).catch(() => {});
+                    }
+                }
+            };
+        })();
 
         // ========== Init ==========
         document.addEventListener('DOMContentLoaded', () => {

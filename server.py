@@ -65,7 +65,7 @@ backtest_logger = _get_logger('backtest', 'backtest.log')
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional, Dict
@@ -95,6 +95,7 @@ from data.database import SQLiteManager
 from data.calendar import TradeCalendar
 from sigbus.bus import SignalBus
 from broker.manual_broker import ManualBroker
+from broker.monitor import MonitorEngine
 from config.strategy_profiles import SIGNAL_BUS_CONFIG
 from config.settings import LIVE_TRADING_CONFIG, DATA_CACHE_DIR
 from data.sync_service import DataSyncService
@@ -362,6 +363,12 @@ app.add_middleware(
 # 静态文件配置
 web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 app.mount("/static", StaticFiles(directory=web_dir), name="static")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """在 uvicorn 启动后设置事件循环，供 MonitorEngine 跨线程 SSE 推送使用"""
+    MonitorEngine.get_instance().set_event_loop(asyncio.get_running_loop())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1903,6 +1910,108 @@ async def mark_checklist_skipped(item_id: str):
     return {"status": "error", "message": f"找不到 {item_id}"}
 
 # ============================================================
+# 大单监控 API
+# ============================================================
+
+class MonitorStartRequest(BaseModel):
+    """大单监控启动请求"""
+    stock_pool: Optional[List[str]] = None
+
+
+@app.post("/api/monitor/start")
+async def monitor_start(request: MonitorStartRequest = MonitorStartRequest()):
+    """启动大单监控"""
+    engine = MonitorEngine.get_instance()
+    if engine.is_running:
+        raise HTTPException(status_code=400, detail="监控已在运行中")
+
+    stock_pool = request.stock_pool
+    if not stock_pool:
+        # 从实盘股票池获取
+        persisted_pool = _load_stock_pool()
+        if persisted_pool:
+            stock_pool = [s['code'] for s in persisted_pool]
+        else:
+            stock_pool = LIVE_TRADING_CONFIG.get('scan', {}).get('stock_pool', [])
+
+    if not stock_pool:
+        raise HTTPException(status_code=400, detail="股票池为空，请提供 stock_pool 或先配置实盘股票池")
+
+    try:
+        engine.start(stock_pool)
+        logger.info(f"大单监控已启动, stock_count={len(stock_pool)}")
+        return {"status": "started", "stock_count": len(stock_pool)}
+    except Exception as e:
+        logger.error(f"启动大单监控失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/monitor/stop")
+async def monitor_stop():
+    """停止大单监控"""
+    engine = MonitorEngine.get_instance()
+    if not engine.is_running:
+        raise HTTPException(status_code=400, detail="监控未在运行")
+
+    try:
+        total_alerts = len(engine._alerts)
+        engine.stop()
+        logger.info(f"大单监控已停止, total_alerts={total_alerts}")
+        return {"status": "stopped", "total_alerts": total_alerts}
+    except Exception as e:
+        logger.error(f"停止大单监控失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/monitor/status")
+async def monitor_status():
+    """获取大单监控状态"""
+    engine = MonitorEngine.get_instance()
+    stock_count = len(engine._stock_pool) if hasattr(engine, '_stock_pool') and engine._stock_pool else 0
+    return {
+        "running": engine.is_running,
+        "stock_count": stock_count,
+        "total_alerts": len(engine._alerts),
+    }
+
+
+@app.get("/api/monitor/history")
+async def monitor_history(limit: int = 100):
+    """获取大单监控历史告警"""
+    engine = MonitorEngine.get_instance()
+    alerts = engine.get_history(limit)
+    return {
+        "alerts": [json.loads(a.to_sse_data()) if hasattr(a, 'to_sse_data') else a
+                   for a in alerts],
+        "total": len(engine._alerts) if hasattr(engine, '_alerts') else 0,
+    }
+
+
+@app.get("/api/monitor/stream")
+async def monitor_stream():
+    """大单监控 SSE 推送"""
+    engine = MonitorEngine.get_instance()
+    queue = engine.sse_manager.subscribe()
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    alert = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    data = alert.to_sse_data() if hasattr(alert, 'to_sse_data') else json.dumps(
+                        alert if isinstance(alert, dict) else str(alert), ensure_ascii=False
+                    )
+                    yield f"event: alert\ndata: {data}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"event: heartbeat\ndata: {{\"time\":\"{datetime.now().strftime('%H:%M:%S')}\"}}\n\n"
+        except asyncio.CancelledError:
+            engine.sse_manager.unsubscribe(queue)
+            raise
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ============================================================
 # 数据库浏览器 API
 # ============================================================
 
@@ -1993,7 +2102,8 @@ async def get_db_stocks():
 async def get_db_kline(
     code: str,
     start_date: str = Query(default='20240101', description='开始日期 YYYYMMDD'),
-    end_date: str = Query(default='20251231', description='结束日期 YYYYMMDD'),
+    end_date: str = Query(default='20261231', description='结束日期 YYYYMMDD'),
+    indicators: str = Query(default='ma', description='技术指标: ma, macd, rsi, boll, kdj, all'),
 ):
     """获取股票K线数据（含技术指标）"""
     try:
@@ -2040,10 +2150,19 @@ async def get_db_kline(
             else:
                 bar['ma60'] = None
 
+        # 高级技术指标（MACD/RSI/BOLL/KDJ）
+        adv_indicators = set(indicators.replace(' ', '').split(','))
+        if 'all' in adv_indicators:
+            adv_indicators = {'macd', 'rsi', 'boll', 'kdj'}
+
+        if adv_indicators & {'macd', 'rsi', 'boll', 'kdj'}:
+            from utils.indicators import compute_advanced_indicators
+            compute_advanced_indicators(bars)
+
         # 格式化输出
         result_bars = []
         for b in bars:
-            result_bars.append({
+            item = {
                 'date': b['trade_date'],
                 'open': round(b['open'], 2),
                 'high': round(b['high'], 2),
@@ -2055,7 +2174,15 @@ async def get_db_kline(
                 'ma10': round(b['ma10'], 2) if b['ma10'] else None,
                 'ma20': round(b['ma20'], 2) if b['ma20'] else None,
                 'ma60': round(b['ma60'], 2) if b['ma60'] else None,
-            })
+            }
+            # 附加高级指标
+            for key in ('macd_dif', 'macd_dea', 'macd_hist',
+                        'rsi6', 'rsi12', 'rsi24',
+                        'boll_upper', 'boll_mid', 'boll_lower', 'boll_width',
+                        'kdj_k', 'kdj_d', 'kdj_j'):
+                if key in b and b[key] is not None:
+                    item[key] = b[key]
+            result_bars.append(item)
 
         return {
             'code': code,
@@ -2154,6 +2281,9 @@ app.include_router(web_api_router)
 from web.kline_api import router as kline_api_router
 app.include_router(kline_api_router)
 
+from web.db_api import router as db_api_router
+app.include_router(db_api_router)
+
 # ============================================================
 # 启动服务
 # ============================================================
@@ -2197,6 +2327,8 @@ A股量化交易系统 - 后端服务
 """
     logger.info("服务启动中...")
     print(banner)
+
+    import asyncio
 
     uvicorn.run(
         "server:app",
