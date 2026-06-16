@@ -97,6 +97,8 @@ from sigbus.bus import SignalBus
 from broker.manual_broker import ManualBroker
 from config.strategy_profiles import SIGNAL_BUS_CONFIG
 from config.settings import LIVE_TRADING_CONFIG, DATA_CACHE_DIR
+from data.sync_service import DataSyncService
+from data.sources import get_data_source
 
 
 def check_and_init_data(db, calendar, fetcher):
@@ -163,10 +165,59 @@ def check_and_init_data(db, calendar, fetcher):
     return status
 
 
+def init_tdx_data(db, sync_service, fetcher):
+    """
+    Initialize TDX-specific data tables if empty.
+    Runs after check_and_init_data.
+    """
+    status = {}
+
+    # 1. Stock list from TDX (fast, 0.09s)
+    try:
+        stock_count = db._conn.execute("SELECT COUNT(*) FROM stock_info").fetchone()[0]
+        if stock_count == 0:
+            logger.info('[Init] 从 TDX 同步股票列表...')
+            count = sync_service.sync_stock_list()
+            status['stock_list'] = f'synced {count} stocks'
+        else:
+            status['stock_list'] = f'ok ({stock_count} stocks)'
+    except Exception as e:
+        status['stock_list'] = f'error: {e}'
+
+    # 2. XDR data
+    try:
+        xdxr_count = db._conn.execute("SELECT COUNT(*) FROM xdxr").fetchone()[0]
+        if xdxr_count == 0:
+            logger.info('[Init] 从 TDX 同步除权除息...')
+            # Get stock codes from DB
+            codes = [row['ts_code'] for row in
+                     db._conn.execute("SELECT DISTINCT ts_code FROM daily_bars LIMIT 500").fetchall()]
+            if codes:
+                count = sync_service.sync_xdxr(codes)
+                status['xdxr'] = f'synced {count} records'
+            else:
+                status['xdxr'] = 'no stock codes to sync'
+        else:
+            status['xdxr'] = f'ok ({xdxr_count} records)'
+    except Exception as e:
+        status['xdxr'] = f'error: {e}'
+
+    # 3. Block info (skip if already populated — it's large)
+    try:
+        block_count = db._conn.execute("SELECT COUNT(*) FROM block_info").fetchone()[0]
+        if block_count == 0:
+            status['block_info'] = 'skipped (use /api/sync for full sync)'
+        else:
+            status['block_info'] = f'ok ({block_count} records)'
+    except Exception as e:
+        status['block_info'] = f'error: {e}'
+
+    return status
+
+
 async def market_scheduler(live_server, db, fetcher, calendar):
     """交易时段调度器（后台异步任务）"""
     from datetime import datetime, time
-    from data.validator import DataValidator
     import asyncio
 
     while True:
@@ -213,12 +264,10 @@ async def market_scheduler(live_server, db, fetcher, calendar):
                 try:
                     stock_pool = live_server.config.get('scan', {}).get('stock_pool', [])
                     if stock_pool:
-                        df = fetcher.get_daily_data_batch(stock_pool, today_str, today_str)
-                        if df is not None and not df.empty:
-                            rows = df.to_dict('records')
-                            valid = DataValidator.filter_valid_daily_bars(rows)
-                            if valid:
-                                db.upsert_daily_bars(valid)
+                        # 收盘一键同步：日线 + 分钟线 + 财务
+                        ts_codes = [f"{c}.SH" if c.startswith('6') else f"{c}.SZ" for c in stock_pool]
+                        sync_result = sync_service.daily_close_sync(ts_codes, today_str)
+                        logger.info(f"[Scheduler] 数据同步完成: {sync_result}")
 
                     # Cleanup old minute bars (keep 5 days)
                     if hasattr(db, 'cleanup_old_minute_bars'):
@@ -269,10 +318,16 @@ async def market_scheduler(live_server, db, fetcher, calendar):
 # Database
 db = SQLiteManager()
 calendar = TradeCalendar(db)
+fetcher = DataFetcher()
+
+# 初始化数据同步服务
+sync_service = DataSyncService(db, fetcher._primary)
 
 # Run data initialization check
-init_status = check_and_init_data(db, calendar, DataFetcher())
+init_status = check_and_init_data(db, calendar, fetcher)
+tdx_init_status = init_tdx_data(db, sync_service, fetcher)
 logger.info(f"[Server] Data status: {init_status}")
+logger.info(f"[Server] TDX data status: {tdx_init_status}")
 
 # SignalBus
 signal_bus = SignalBus(SIGNAL_BUS_CONFIG)

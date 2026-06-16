@@ -76,8 +76,17 @@ class MatchEngine:
             'at_limit_down': open_price <= limit_down,
         }
 
-    def match_order(self, order: Order, stock_data: dict, prev_close: float) -> Order:
-        """撮合订单（成交价约束在当日最高/最低价范围内）"""
+    def match_order(self, order: Order, stock_data: dict, prev_close: float,
+                     override_fill_price: float = None) -> Order:
+        """撮合订单（成交价约束在当日最高/最低价范围内）
+
+        Args:
+            order: 订单对象
+            stock_data: 当日股票数据
+            prev_close: 前一日收盘价
+            override_fill_price: 若提供，直接用作成交价，跳过滑点计算
+                                 （用于分钟线执行模拟等外部定价场景）
+        """
         open_price = stock_data.get('open', stock_data.get('close', 0))
         day_high = stock_data.get('high', open_price)
         day_low = stock_data.get('low', open_price)
@@ -96,12 +105,17 @@ class MatchEngine:
             return order
 
         # ============================================================
-        # 成交价 = 开盘价 + 滑点，约束在当日 [最低价, 最高价] 范围内
-        # 不能低于当天最低价，也不能高于当天最高价
+        # 成交价计算
+        # - 若有外部定价（override_fill_price），直接使用
+        # - 否则：开盘价 + 滑点，约束在当日 [最低价, 最高价] 范围内
         # ============================================================
-        base_price = open_price
-        slippage = self.calculate_slippage(base_price, order.side)
-        fill_price = base_price + slippage
+        if override_fill_price is not None and override_fill_price > 0:
+            fill_price = override_fill_price
+            slippage = fill_price - open_price
+        else:
+            base_price = open_price
+            slippage = self.calculate_slippage(base_price, order.side)
+            fill_price = base_price + slippage
 
         # 约束在当日价格区间内
         if day_high > 0 and day_low > 0:

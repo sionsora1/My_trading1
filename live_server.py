@@ -22,6 +22,7 @@ from broker import (
     is_trading_time
 )
 from broker.executor import TradeChecklist
+from broker.order_book import OrderBookEstimator
 from strategy import get_strategy, STRATEGY_REGISTRY
 from data.fetcher import DataFetcher, DataCache
 from config.settings import LIVE_TRADING_CONFIG, BACKTEST_CONFIG
@@ -749,19 +750,40 @@ class LiveTradingServer:
                     continue
 
                 if self.trade_mode == 'auto':
+                    # 尝试获取盘口数据估算真实成交价
+                    estimated_price = price  # 默认使用快照价
+                    try:
+                        quotes = self.fetcher.get_realtime_quotes([signal.ts_code])
+                        if quotes and signal.ts_code in quotes:
+                            q = quotes[signal.ts_code]
+                            est = OrderBookEstimator.estimate(q, signal.signal, quantity)
+                            if est['enough_liquidity']:
+                                estimated_price = est['estimated_price']
+                                logger.debug(f'盘口估算: {signal.ts_code} 预估成交价={estimated_price}, 偏离最优={est["slippage_from_best"]}%')
+                            else:
+                                logger.warning(f'盘口流动性不足: {signal.ts_code} 需{quantity}股, 盘口仅{est["depth_available"]}股')
+                                # 降级: 用可成交数量
+                                if est['depth_available'] >= 100:
+                                    quantity = est['depth_available'] // 100 * 100  # 取整手
+                                    estimated_price = est['estimated_price']
+                    except Exception as e:
+                        logger.debug(f'盘口获取失败, 使用快照价: {e}')
+                        estimated_price = price
+
+                    # 使用估算价格下单
                     logger.info('下单请求', extra={'data': {
                         'ts_code': signal.ts_code,
                         'side': signal.signal,
                         'quantity': quantity,
-                        'price': price,
-                        'amount': price * quantity,
+                        'price': estimated_price,
+                        'amount': estimated_price * quantity,
                         'reason': f'[{signal.strategy}] {signal.reason}',
                     }})
                     result = self.submit_order(
                         ts_code=signal.ts_code,
                         side=signal.signal,
                         quantity=quantity,
-                        price=price,
+                        price=estimated_price,
                         reason=f"[{signal.strategy}] {signal.reason}"
                     )
                     logger.info('下单结果', extra={'data': {

@@ -28,6 +28,7 @@ class BacktestConfig:
     limit_down_rate: float = -0.10
     t_plus_1: bool = True
     strict_mode: bool = False  # True: 信号基于前一日数据，消除日线前视偏差
+    use_minute_execution: bool = False  # 启用分钟线执行模拟，真实VWAP成交价替代固定滑点
     start_date: str = '20230101'
     end_date: str = '20241231'
     rebalance_frequency: str = 'weekly'  # daily/weekly/monthly
@@ -309,7 +310,61 @@ class BacktestEngine:
                     return True
         return False
 
-    def execute_buy(self, ts_code: str, price: float, quantity: int, stock_data: dict, reason: str = '') -> bool:
+    def _get_minute_fill_price(self, ts_code: str, date: str, side: str,
+                                quantity: int, open_price: float) -> float | None:
+        """尝试通过分钟线执行模拟获取成交价。
+
+        Args:
+            ts_code: 股票代码，可带或不带交易所后缀（如 '600519' 或 '600519.SH'）
+            date: 交易日期 YYYYMMDD
+            side: 'BUY' or 'SELL'
+            quantity: 目标股数
+            open_price: 当日开盘价（兜底用）
+
+        Returns:
+            分钟线加权成交价，或 None（降级为固定滑点）
+        """
+        if self.db is None:
+            return None
+        try:
+            from backtest.minute_executor import MinuteBarExecutor
+
+            # Normalize to suffixed code for DB lookup
+            code = str(ts_code)
+            if '.' not in code:
+                code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+
+            minute_bars = self.db.get_minute_bars_by_date(code, date, period=5)
+            if not minute_bars:
+                # Try without suffix
+                minute_bars = self.db.get_minute_bars_by_date(ts_code, date, period=5)
+
+            executor = MinuteBarExecutor(minute_bars)
+            if executor.has_data:
+                result = executor.estimate_fill_price(side, quantity)
+                if result['fill_price'] > 0:
+                    if not result['fully_filled']:
+                        logger.warning(
+                            f'{ts_code} {date}: 分钟线流动性不足, '
+                            f'仅成交{result["filled_quantity"]}股'
+                        )
+                    return result['fill_price']
+        except Exception as e:
+            logger.debug(f'{ts_code} {date}: 分钟线执行失败, 降级为固定滑点: {e}')
+        return None
+
+    def _maybe_minute_fill(self, ts_code: str, side: str,
+                           quantity: int, open_price: float) -> float | None:
+        """条件性获取分钟线成交价。仅当 use_minute_execution 开启时生效。"""
+        if self.config.use_minute_execution:
+            return self._get_minute_fill_price(
+                ts_code, self.current_date, side, quantity, open_price
+            )
+        return None
+
+    def execute_buy(self, ts_code: str, price: float, quantity: int,
+                    stock_data: dict, reason: str = '',
+                    minute_fill_price: float = None) -> bool:
         """执行买入"""
         if quantity < 100:
             return False
@@ -324,7 +379,10 @@ class BacktestEngine:
             order_date=self.current_date
         )
 
-        order = self.match_engine.match_order(order, stock_data, prev_close)
+        order = self.match_engine.match_order(
+            order, stock_data, prev_close,
+            override_fill_price=minute_fill_price
+        )
 
         if order.status != OrderStatus.FILLED:
             return False
@@ -374,7 +432,9 @@ class BacktestEngine:
 
         return True
 
-    def execute_sell(self, ts_code: str, price: float, quantity: int, stock_data: dict, reason: str = '') -> bool:
+    def execute_sell(self, ts_code: str, price: float, quantity: int,
+                     stock_data: dict, reason: str = '',
+                     minute_fill_price: float = None) -> bool:
         """执行卖出"""
         if ts_code not in self.positions or quantity <= 0:
             return False
@@ -392,7 +452,10 @@ class BacktestEngine:
             order_date=self.current_date
         )
 
-        order = self.match_engine.match_order(order, stock_data, prev_close)
+        order = self.match_engine.match_order(
+            order, stock_data, prev_close,
+            override_fill_price=minute_fill_price
+        )
 
         if order.status != OrderStatus.FILLED:
             return False
@@ -795,6 +858,8 @@ class BacktestEngine:
         print(f"调仓频率: {self.config.rebalance_frequency} | 止损线: {self.config.stop_loss_rate:.0%} | 移动止盈: {self.config.move_stop_rate:.0%}")
         if strict:
             print(f"[Strict Mode] 策略基于前一日收盘数据决策，消除前视偏差")
+        if self.config.use_minute_execution:
+            print(f"[Minute Exec] 使用历史分钟线VWAP模拟成交，替代固定滑点")
 
         for i, date in enumerate(dates):
             self.current_date = date
@@ -815,8 +880,9 @@ class BacktestEngine:
                     quantity = self.get_sell_quantity(ts_code)
                     if quantity > 0 and ts_code in market_data:
                         price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
+                        minute_fp = self._maybe_minute_fill(ts_code, 'SELL', quantity, price)
                         old_count = len(self.trade_records)
-                        if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                        if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason'], minute_fill_price=minute_fp):
                             if len(self.trade_records) > old_count:
                                 day_sells.append(self.trade_records[-1])
 
@@ -835,8 +901,9 @@ class BacktestEngine:
                         quantity = self.get_sell_quantity(ts_code)
                         if quantity > 0 and ts_code in market_data:
                             price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
+                            minute_fp = self._maybe_minute_fill(ts_code, 'SELL', quantity, price)
                             old_count = len(self.trade_records)
-                            if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                            if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason'], minute_fill_price=minute_fp):
                                 if len(self.trade_records) > old_count:
                                     day_sells.append(self.trade_records[-1])
 
@@ -849,8 +916,9 @@ class BacktestEngine:
                         price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
                         quantity = self.calculate_buy_quantity(price, sig['weight'])
                         if quantity >= 100:
+                            minute_fp = self._maybe_minute_fill(ts_code, 'BUY', quantity, price)
                             old_count = len(self.trade_records)
-                            if self.execute_buy(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                            if self.execute_buy(ts_code, price, quantity, market_data[ts_code], sig['reason'], minute_fill_price=minute_fp):
                                 if len(self.trade_records) > old_count:
                                     day_buys.append(self.trade_records[-1])
 
@@ -864,8 +932,9 @@ class BacktestEngine:
                     quantity = self.get_sell_quantity(ts_code)
                     if quantity > 0 and ts_code in market_data:
                         price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
+                        minute_fp = self._maybe_minute_fill(ts_code, 'SELL', quantity, price)
                         old_count = len(self.trade_records)
-                        if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                        if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason'], minute_fill_price=minute_fp):
                             if len(self.trade_records) > old_count:
                                 day_sells.append(self.trade_records[-1])
 
@@ -886,8 +955,9 @@ class BacktestEngine:
                         quantity = self.get_sell_quantity(ts_code)
                         if quantity > 0 and ts_code in market_data:
                             price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
+                            minute_fp = self._maybe_minute_fill(ts_code, 'SELL', quantity, price)
                             old_count = len(self.trade_records)
-                            if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                            if self.execute_sell(ts_code, price, quantity, market_data[ts_code], sig['reason'], minute_fill_price=minute_fp):
                                 if len(self.trade_records) > old_count:
                                     day_sells.append(self.trade_records[-1])
 
@@ -900,8 +970,9 @@ class BacktestEngine:
                         price = market_data[ts_code].get('open', market_data[ts_code].get('close', 0))
                         quantity = self.calculate_buy_quantity(price, sig['weight'])
                         if quantity >= 100:
+                            minute_fp = self._maybe_minute_fill(ts_code, 'BUY', quantity, price)
                             old_count = len(self.trade_records)
-                            if self.execute_buy(ts_code, price, quantity, market_data[ts_code], sig['reason']):
+                            if self.execute_buy(ts_code, price, quantity, market_data[ts_code], sig['reason'], minute_fill_price=minute_fp):
                                 if len(self.trade_records) > old_count:
                                     day_buys.append(self.trade_records[-1])
 

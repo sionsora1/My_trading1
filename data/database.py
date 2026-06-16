@@ -150,6 +150,94 @@ class SQLiteManager:
             """
         )
 
+        # Migration: add amount column to minute_bars
+        try:
+            self._conn.execute("ALTER TABLE minute_bars ADD COLUMN amount REAL;")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+        # Migration: add TDX-specific columns to fundamentals
+        _fundamentals_new_cols = [
+            ('total_shares', 'REAL'),
+            ('float_shares', 'REAL'),
+            ('total_assets', 'REAL'),
+            ('net_assets_ps', 'REAL'),
+            ('operating_revenue', 'REAL'),
+            ('operating_profit', 'REAL'),
+            ('operating_cf', 'REAL'),
+            ('shareholder_count', 'REAL'),
+        ]
+        for col_name, col_type in _fundamentals_new_cols:
+            try:
+                self._conn.execute(f"ALTER TABLE fundamentals ADD COLUMN {col_name} {col_type};")
+            except sqlite3.OperationalError:
+                pass
+
+        # New tables for TDX integration
+        self._conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS xdxr (
+                ts_code       TEXT NOT NULL,
+                ex_date       TEXT NOT NULL,
+                category      INTEGER,
+                name          TEXT,
+                fenhong       REAL,
+                songzhuangu   REAL,
+                peigu         REAL,
+                peigujia      REAL,
+                suogu         REAL,
+                qianzongguben REAL,
+                houzongguben  REAL,
+                fenshu        REAL,
+                xingquanjia   REAL,
+                PRIMARY KEY (ts_code, ex_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS block_info (
+                block_code  TEXT NOT NULL,
+                block_name  TEXT NOT NULL,
+                block_type  TEXT NOT NULL,
+                ts_code     TEXT NOT NULL,
+                stock_name  TEXT,
+                PRIMARY KEY (block_code, ts_code)
+            );
+
+            CREATE TABLE IF NOT EXISTS finance_detail (
+                ts_code           TEXT NOT NULL,
+                report_date       TEXT NOT NULL,
+                total_shares      REAL,
+                float_shares      REAL,
+                state_shares      REAL,
+                legal_person_shares REAL,
+                b_shares          REAL,
+                h_shares          REAL,
+                employee_shares   REAL,
+                total_assets      REAL,
+                current_assets    REAL,
+                fixed_assets      REAL,
+                intangible_assets REAL,
+                net_equity        REAL,
+                current_liabilities REAL,
+                long_term_liabilities REAL,
+                operating_revenue REAL,
+                operating_profit  REAL,
+                business_profit   REAL,
+                net_profit_after_tax REAL,
+                retained_earnings REAL,
+                operating_cf      REAL,
+                total_cf          REAL,
+                capital_reserve   REAL,
+                shareholder_count REAL,
+                net_assets_ps     REAL,
+                investment_income REAL,
+                inventory         REAL,
+                receivables       REAL,
+                ipo_date          TEXT,
+                PRIMARY KEY (ts_code, report_date)
+            );
+            """
+        )
+
     def _create_indexes(self):
         """Create indexes on frequently-queried columns."""
         self._conn.executescript(
@@ -170,6 +258,14 @@ class SQLiteManager:
                 ON trade_calendar(trade_date);
             CREATE INDEX IF NOT EXISTS idx_data_log_type
                 ON data_log(data_type, ts_code);
+            CREATE INDEX IF NOT EXISTS idx_xdxr_ts
+                ON xdxr(ts_code);
+            CREATE INDEX IF NOT EXISTS idx_block_type
+                ON block_info(block_type);
+            CREATE INDEX IF NOT EXISTS idx_block_ts
+                ON block_info(ts_code);
+            CREATE INDEX IF NOT EXISTS idx_finance_detail_date
+                ON finance_detail(report_date);
             """
         )
 
@@ -224,9 +320,9 @@ class SQLiteManager:
         """Insert or replace a batch of minute bar rows."""
         sql = """
             INSERT OR REPLACE INTO minute_bars
-                (ts_code, trade_time, period, open, high, low, close, volume)
+                (ts_code, trade_time, period, open, high, low, close, volume, amount)
             VALUES
-                (:ts_code, :trade_time, :period, :open, :high, :low, :close, :volume)
+                (:ts_code, :trade_time, :period, :open, :high, :low, :close, :volume, :amount)
         """
         with self._transaction() as conn:
             conn.executemany(sql, rows)
@@ -235,7 +331,7 @@ class SQLiteManager:
                         end_time: str, period: int) -> list[dict]:
         """Return minute bars in a time window for a given period."""
         sql = """
-            SELECT ts_code, trade_time, period, open, high, low, close, volume
+            SELECT ts_code, trade_time, period, open, high, low, close, volume, amount
             FROM minute_bars
             WHERE ts_code = ? AND period = ?
               AND trade_time >= ? AND trade_time <= ?
@@ -474,6 +570,149 @@ class SQLiteManager:
         if result.get("positions_json"):
             result["positions"] = json.loads(result.pop("positions_json"))
         return result
+
+    # ------------------------------------------------------------------
+    # xdxr CRUD
+    # ------------------------------------------------------------------
+
+    def upsert_xdxr(self, rows: list[dict]):
+        """Batch upsert dividend/split data (除权除息)."""
+        if not rows:
+            return
+        with self._transaction() as conn:
+            conn.executemany(
+                """INSERT OR REPLACE INTO xdxr
+                   (ts_code, ex_date, category, name, fenhong, songzhuangu,
+                    peigu, peigujia, suogu, qianzongguben, houzongguben,
+                    fenshu, xingquanjia)
+                   VALUES (:ts_code, :ex_date, :category, :name, :fenhong,
+                    :songzhuangu, :peigu, :peigujia, :suogu, :qianzongguben,
+                    :houzongguben, :fenshu, :xingquanjia)""",
+                rows
+            )
+
+    # ------------------------------------------------------------------
+    # block_info CRUD
+    # ------------------------------------------------------------------
+
+    def upsert_block_info(self, rows: list[dict]):
+        """Batch upsert block constituent stocks (板块成分股)."""
+        if not rows:
+            return
+        with self._transaction() as conn:
+            conn.executemany(
+                """INSERT OR REPLACE INTO block_info
+                   (block_code, block_name, block_type, ts_code, stock_name)
+                   VALUES (:block_code, :block_name, :block_type, :ts_code, :stock_name)""",
+                rows
+            )
+
+    def get_block_stocks(self, block_name: str = None, block_code: str = None) -> list[dict]:
+        """Query block constituent stocks by name or code.
+
+        Args:
+            block_name: Block name (fuzzy match via LIKE).
+            block_code: Exact block code match.
+
+        Returns:
+            List of matching rows, or empty list if neither argument is given.
+        """
+        if block_code:
+            rows = self._conn.execute(
+                "SELECT * FROM block_info WHERE block_code = ?", (block_code,)
+            ).fetchall()
+        elif block_name:
+            rows = self._conn.execute(
+                "SELECT * FROM block_info WHERE block_name LIKE ?", (f'%{block_name}%',)
+            ).fetchall()
+        else:
+            return []
+        return [dict(r) for r in rows]
+
+    def clear_block_info(self, block_type: str = None):
+        """Clear block data, optionally filtered by block_type.
+
+        Args:
+            block_type: If given, only delete rows where block_type matches.
+        """
+        if block_type:
+            self._conn.execute("DELETE FROM block_info WHERE block_type = ?", (block_type,))
+        else:
+            self._conn.execute("DELETE FROM block_info")
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # finance_detail CRUD
+    # ------------------------------------------------------------------
+
+    def upsert_finance_detail(self, rows: list[dict]):
+        """Batch upsert extended financial data (扩展财务)."""
+        if not rows:
+            return
+        cols = ['ts_code', 'report_date', 'total_shares', 'float_shares',
+                'state_shares', 'legal_person_shares', 'b_shares', 'h_shares',
+                'employee_shares', 'total_assets', 'current_assets', 'fixed_assets',
+                'intangible_assets', 'net_equity', 'current_liabilities',
+                'long_term_liabilities', 'operating_revenue', 'operating_profit',
+                'business_profit', 'net_profit_after_tax', 'retained_earnings',
+                'operating_cf', 'total_cf', 'capital_reserve', 'shareholder_count',
+                'net_assets_ps', 'investment_income', 'inventory', 'receivables', 'ipo_date']
+        placeholders = ', '.join(f':{c}' for c in cols)
+        cols_str = ', '.join(cols)
+        # Fill missing keys with None so executemany never fails on partial data
+        rows = [{c: r.get(c) for c in cols} for r in rows]
+        with self._transaction() as conn:
+            conn.executemany(
+                f"INSERT OR REPLACE INTO finance_detail ({cols_str}) VALUES ({placeholders})",
+                rows
+            )
+
+    def get_finance_detail(self, ts_code: str, trade_date: str = None) -> dict:
+        """Return the latest extended financial data for a stock.
+
+        Args:
+            ts_code: Stock code (e.g. '000001.SZ').
+            trade_date: If given, restrict to reports on or before this date.
+
+        Returns:
+            Dict of the latest row, or empty dict if none found.
+        """
+        if trade_date:
+            row = self._conn.execute(
+                """SELECT * FROM finance_detail
+                   WHERE ts_code = ? AND report_date <= ?
+                   ORDER BY report_date DESC LIMIT 1""",
+                (ts_code, trade_date)
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT * FROM finance_detail WHERE ts_code = ? ORDER BY report_date DESC LIMIT 1",
+                (ts_code,)
+            ).fetchone()
+        return dict(row) if row else {}
+
+    # ------------------------------------------------------------------
+    # minute_bars helpers
+    # ------------------------------------------------------------------
+
+    def get_minute_bars_by_date(self, ts_code: str, trade_date: str, period: int = 5) -> list[dict]:
+        """Return minute bars for a stock on a given trade date.
+
+        Args:
+            ts_code: Stock code (e.g. '000001.SZ').
+            trade_date: Trade date string (e.g. '20260612').
+            period: Bar period in minutes (default 5).
+
+        Returns:
+            List of bar dicts ordered by trade_time.
+        """
+        rows = self._conn.execute(
+            """SELECT * FROM minute_bars
+               WHERE ts_code = ? AND trade_time LIKE ? AND period = ?
+               ORDER BY trade_time""",
+            (ts_code, f'{trade_date}%', period)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Housekeeping
@@ -718,7 +957,7 @@ if __name__ == "__main__":
         mgr.upsert_minute_bars([
             {"ts_code": "000001.SZ", "trade_time": "2025-06-10 09:35:00",
              "period": 5, "open": 10.0, "high": 10.1, "low": 9.99,
-             "close": 10.05, "volume": 5000},
+             "close": 10.05, "volume": 5000, "amount": 50250},
         ])
         mb = mgr.get_minute_bars("000001.SZ", "2025-06-10 09:30:00",
                                  "2025-06-10 10:00:00", 5)

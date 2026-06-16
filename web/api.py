@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import APIRouter, HTTPException, Body
 from fastapi.responses import JSONResponse
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from strategy import get_all_strategies, STRATEGY_REGISTRY
 from config.strategy_profiles import (
@@ -427,26 +427,79 @@ async def data_status():
 
 
 @router.post("/api/data/sync")
-async def sync_data():
-    """Sync market data from JSON cache to SQLite database"""
-    try:
-        from data.database import SQLiteManager
-        db = SQLiteManager()
+async def sync_data(source: str = 'cache'):
+    """Sync market data — 'cache' for JSON cache, 'tdx' for TDX full sync"""
+    if source == 'tdx':
         try:
-            counts = db.sync_from_cache()
+            from data.database import SQLiteManager
+            from data.sources import get_data_source
+            from data.sync_service import DataSyncService
+
+            db = SQLiteManager()
+            src = get_data_source('tdx')
+            svc = DataSyncService(db, src)
+
+            # Get stock pool from live server config
+            ls = _get_live_server()
+            stock_pool = []
+            if ls:
+                stock_pool = ls.config.get('scan', {}).get('stock_pool', [])
+            if not stock_pool:
+                # Fallback: get all distinct codes from daily_bars
+                try:
+                    rows = db._conn.execute(
+                        "SELECT DISTINCT ts_code FROM daily_bars LIMIT 100"
+                    ).fetchall()
+                    stock_pool = [r['ts_code'] for r in rows]
+                except Exception:
+                    pass
+
+            # Convert raw codes to ts_code format if needed
+            codes = []
+            for c in stock_pool:
+                if '.' in str(c):  # already in ts_code format
+                    codes.append(str(c))
+                else:
+                    codes.append(f"{c}.SH" if str(c).startswith('6') else f"{c}.SZ")
+
+            # Daily bars for last 30 days
+            end_date = datetime.now().strftime('%Y%m%d')
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
+            daily = svc.sync_daily_bars(codes, start_date, end_date) if codes else {}
+
+            # XDR data
+            xdxr = svc.sync_xdxr(codes) if codes else 0
+
+            db.close()
             return {
                 "status": "success",
                 "data": {
-                    "message": f"已同步 {counts['files']} 个缓存文件",
-                    "daily_bars_inserted": counts['daily_bars'],
-                    "stock_info_inserted": counts['stock_info'],
-                    "files_processed": counts['files'],
+                    "message": "TDX sync completed",
+                    "daily_bars": daily,
+                    "xdxr_records": xdxr,
                 }
             }
-        finally:
-            db.close()
-    except Exception as e:
-        return JSONResponse(content={"status": "error", "message": str(e)})
+        except Exception as e:
+            return JSONResponse(content={"status": "error", "message": str(e)})
+    else:
+        try:
+            from data.database import SQLiteManager
+            db = SQLiteManager()
+            try:
+                counts = db.sync_from_cache()
+                return {
+                    "status": "success",
+                    "data": {
+                        "message": f"已同步 {counts['files']} 个缓存文件",
+                        "daily_bars_inserted": counts['daily_bars'],
+                        "stock_info_inserted": counts['stock_info'],
+                        "files_processed": counts['files'],
+                    }
+                }
+            finally:
+                db.close()
+        except Exception as e:
+            return JSONResponse(content={"status": "error", "message": str(e)})
 
 
 # ============================================================
