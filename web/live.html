@@ -172,6 +172,7 @@
         .text-red { color: var(--red); }
         .text-blue { color: var(--blue); }
         .text-dim { color: var(--text-dim); }
+        .text-yellow { color: var(--yellow); }
     </style>
 </head>
 <body>
@@ -205,6 +206,16 @@
             <span style="margin-left: auto; font-size: 12px; color: var(--text-dim);">
                 告警: <strong id="monitorAlertCount" style="color: var(--yellow);">0</strong> 条
             </span>
+        </div>
+    </div>
+
+    <!-- Watcher Bar -->
+    <div class="card" id="watcherBar" style="margin: 0 24px 12px 24px; padding: 12px 16px; display: none;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <strong>📡 盯盘</strong>
+            <button class="btn btn-primary btn-sm" id="btnWatcherStart" onclick="startWatcher()">▶ 开启</button>
+            <button class="btn btn-sm" id="btnWatcherStop" onclick="stopWatcher()" style="display:none;">⏹ 停止</button>
+            <span style="font-size: 12px; color: var(--text-dim);" id="watcherStatusText">未启动</span>
         </div>
     </div>
 
@@ -351,6 +362,7 @@
                     <div class="tab active" onclick="switchTab('order')" id="tabOrder">✏️ 手动下单</div>
                     <div class="tab" onclick="switchTab('pool')" id="tabPool">📊 股票池 (<span id="poolCount">0</span>)</div>
                     <div class="tab" onclick="switchTab('monitor')" id="tabMonitor">📡 大单监控 (<span id="monitorTabCount">0</span>)</div>
+                    <div class="tab" onclick="switchTab('watcher')" id="tabWatcher">📡 盯盘</div>
                 </div>
 
                 <!-- Order Form -->
@@ -426,6 +438,31 @@
                     </div>
                     <div style="max-height: 250px; overflow-y: auto;" id="alertList">
                         <p class="text-dim" style="text-align:center; padding:40px;">-- 暂无大单告警 --</p>
+                    </div>
+                </div>
+
+                <!-- Watcher Panel -->
+                <div id="panelWatcher" class="tab-content" style="padding-top: 12px;">
+                    <!-- Stats bar -->
+                    <div style="display:flex;gap:12px;margin-bottom:16px;">
+                        <div class="metric"><div class="metric-label">涨停</div><div class="metric-value text-red" id="statLimitUp">0</div></div>
+                        <div class="metric"><div class="metric-label">跌停</div><div class="metric-value text-green" id="statLimitDown">0</div></div>
+                        <div class="metric"><div class="metric-label">异动</div><div class="metric-value text-blue" id="statSurge">0</div></div>
+                        <div class="metric"><div class="metric-label">资金流</div><div class="metric-value text-yellow" id="statFlow">0</div></div>
+                    </div>
+
+                    <!-- Sub-tabs -->
+                    <div class="btn-group" id="watcherSubTabs" style="margin-bottom:12px;">
+                        <button class="btn btn-sm btn-primary" id="btnWatcherPool" onclick="switchWatcherSubTab('pool')">自选股</button>
+                        <button class="btn btn-sm" id="btnWatcherLimit" onclick="switchWatcherSubTab('limit')">涨跌停</button>
+                        <button class="btn btn-sm" id="btnWatcherSurge" onclick="switchWatcherSubTab('surge')">异动</button>
+                        <button class="btn btn-sm" id="btnWatcherSector" onclick="switchWatcherSubTab('sector')">板块</button>
+                        <button class="btn btn-sm" id="btnWatcherFlow" onclick="switchWatcherSubTab('flow')">资金流</button>
+                    </div>
+
+                    <!-- Content area -->
+                    <div id="watcherContent" style="max-height:350px;overflow-y:auto;">
+                        <p class="text-dim" style="text-align:center;padding:40px;">-- 请启动盯盘 --</p>
                     </div>
                 </div>
             </div>
@@ -973,9 +1010,9 @@
             const container = document.getElementById('alertList');
             let filtered = allAlerts;
             if (monitorFilter === 'buy') {
-                filtered = allAlerts.filter(a => (a.side || a.direction) === 'BUY');
+                filtered = allAlerts.filter(a => ((a.side || a.direction) || '').toLowerCase() === 'buy');
             } else if (monitorFilter === 'sell') {
-                filtered = allAlerts.filter(a => (a.side || a.direction) === 'SELL');
+                filtered = allAlerts.filter(a => ((a.side || a.direction) || '').toLowerCase() === 'sell');
             }
 
             if (!filtered.length) {
@@ -984,21 +1021,28 @@
             }
 
             container.innerHTML = filtered.map(a => {
-                const isBuy = (a.side || a.direction) === 'BUY';
-                const colorClass = isBuy ? 'text-green' : 'text-red';
-                const label = isBuy ? '买入' : '卖出';
+                const dir = ((a.side || a.direction) || '').toLowerCase();
+                const isBuy = dir === 'buy';
+                const isUnknown = dir === 'unknown';
+                const colorClass = isBuy ? 'text-green' : (isUnknown ? 'text-yellow' : 'text-red');
+                const label = isBuy ? '买入' : (isUnknown ? '中性' : '卖出');
+                const icon = isBuy ? '🟢' : (isUnknown ? '🟡' : '🔴');
+                const reasonParts = [];
+                if (a.hands) reasonParts.push(`${a.hands}手`);
+                if (a.amount) reasonParts.push(`${(a.amount/10000).toFixed(0)}万元`);
+                const reasonText = reasonParts.length ? reasonParts.join(' / ') : '--';
                 return `
-                <div class="signal-row ${isBuy ? 'signal-buy' : 'signal-sell'}">
+                <div class="signal-row ${isBuy ? 'signal-buy' : (isUnknown ? '' : 'signal-sell')}">
                     <div class="signal-info">
                         <div>
-                            <span class="signal-code">${a.ts_code || a.code || '--'}</span>
+                            <span class="signal-code">${a.code || '--'}</span>
                             <span class="signal-name">${a.name || '--'}</span>
                             <span class="signal-meta"> | ${a._time || '--'}</span>
                         </div>
-                        <div class="signal-reason">${a.reason || a.message || '--'}</div>
+                        <div class="signal-reason">${reasonText}</div>
                         <div class="signal-meta">
-                            <span class="${colorClass}">${isBuy ? '🟢' : '🔴'} ${label}</span>
-                            | 价格: ${(a.price || 0).toFixed(2)} | 数量: ${a.volume || a.quantity || '--'} | 金额: ${a.amount ? (a.amount/10000).toFixed(2) + '万' : '--'}
+                            <span class="${colorClass}">${icon} ${label}</span>
+                            | 价格: ${(a.price || 0).toFixed(2)} | 量: ${a.volume || '--'} | 额: ${a.amount ? (a.amount/10000).toFixed(0) + '万' : '--'}
                         </div>
                     </div>
                 </div>`;
@@ -1027,6 +1071,8 @@
             switchTab = function(tab) {
                 _origSwitchTab(tab);
                 if (tab === 'monitor') {
+                    document.getElementById('monitorBar').style.display = '';
+                    document.getElementById('watcherBar').style.display = 'none';
                     document.getElementById('monitorTabCount').textContent = allAlerts.length;
                     // Load history on first visit
                     if (allAlerts.length === 0) {
@@ -1039,9 +1085,219 @@
                             }
                         }).catch(() => {});
                     }
+                } else if (tab === 'watcher') {
+                    document.getElementById('monitorBar').style.display = 'none';
+                    document.getElementById('watcherBar').style.display = '';
+                } else {
+                    document.getElementById('monitorBar').style.display = 'none';
+                    document.getElementById('watcherBar').style.display = 'none';
                 }
             };
         })();
+
+        // ========== Market Watcher ==========
+        let watcherSSE = null;
+        let watcherSubTab = 'pool';
+        let poolStocks = [];
+        let limitAlerts = [];
+        let surgeAlerts = [];
+        let flowAlerts = [];
+        let sectorData = { concept: [], industry: [] };
+
+        async function startWatcher() {
+            const stockPool = getCurrentStockPool();
+            if (!stockPool.length) { showToast('股票池为空', 'error'); return; }
+            try {
+                const r = await fetch('/api/watcher/start', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ stock_pool: stockPool })
+                }).then(res => res.json());
+                if (r.status === 'started') {
+                    document.getElementById('btnWatcherStart').style.display = 'none';
+                    document.getElementById('btnWatcherStop').style.display = '';
+                    document.getElementById('watcherStatusText').textContent = '运行中';
+                    document.getElementById('watcherStatusText').style.color = 'var(--green)';
+                    connectWatcherSSE();
+                    showToast('盯盘已启动', 'success');
+                } else if (r.status === 'already_running') {
+                    document.getElementById('btnWatcherStart').style.display = 'none';
+                    document.getElementById('btnWatcherStop').style.display = '';
+                    document.getElementById('watcherStatusText').textContent = '运行中';
+                    document.getElementById('watcherStatusText').style.color = 'var(--green)';
+                    connectWatcherSSE();
+                    showToast('盯盘已在运行中', 'info');
+                } else {
+                    showToast('启动失败: ' + (r.message || '未知错误'), 'error');
+                }
+            } catch(e) { showToast('启动失败: 网络错误', 'error'); }
+        }
+
+        async function stopWatcher() {
+            try {
+                await fetch('/api/watcher/stop', { method: 'POST' });
+            } catch(e) {}
+            document.getElementById('btnWatcherStart').style.display = '';
+            document.getElementById('btnWatcherStop').style.display = 'none';
+            document.getElementById('watcherStatusText').textContent = '未启动';
+            document.getElementById('watcherStatusText').style.color = 'var(--text-dim)';
+            if (watcherSSE) { watcherSSE.close(); watcherSSE = null; }
+        }
+
+        async function checkWatcherStatus() {
+            try {
+                const r = await fetch('/api/watcher/status').then(res => res.json());
+                if (r.running) {
+                    document.getElementById('btnWatcherStart').style.display = 'none';
+                    document.getElementById('btnWatcherStop').style.display = '';
+                    document.getElementById('watcherStatusText').textContent = '运行中';
+                    document.getElementById('watcherStatusText').style.color = 'var(--green)';
+                    connectWatcherSSE();
+                }
+            } catch(e) {}
+        }
+
+        function connectWatcherSSE() {
+            if (watcherSSE) watcherSSE.close();
+            watcherSSE = new EventSource('/api/watcher/stream');
+            watcherSSE.addEventListener('message', (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    switch(msg.type) {
+                        case 'pool_snapshot':
+                            poolStocks = msg.data || [];
+                            if (watcherSubTab === 'pool') renderWatcherPool();
+                            break;
+                        case 'alert':
+                            const a = msg.data;
+                            if (a.type && a.type.includes('surge')) { surgeAlerts.unshift(a); if (surgeAlerts.length > 50) surgeAlerts.pop(); }
+                            if (a.type && (a.type.includes('flow') || a.type.includes('inflow') || a.type.includes('outflow'))) { flowAlerts.unshift(a); if (flowAlerts.length > 50) flowAlerts.pop(); }
+                            if (a.type && a.type.includes('limit')) { limitAlerts.unshift(a); if (limitAlerts.length > 100) limitAlerts.pop(); }
+                            renderWatcherContent();
+                            break;
+                        case 'sector_heatmap':
+                            sectorData = msg.data || {};
+                            if (watcherSubTab === 'sector') renderWatcherSector();
+                            break;
+                        case 'stats':
+                            const s = msg.data || {};
+                            document.getElementById('statLimitUp').textContent = s.limit_up || 0;
+                            document.getElementById('statLimitDown').textContent = s.limit_down || 0;
+                            document.getElementById('statSurge').textContent = s.surge || 0;
+                            document.getElementById('statFlow').textContent = s.flow || 0;
+                            break;
+                    }
+                } catch(e) { console.error('Watcher SSE parse error:', e); }
+            });
+            watcherSSE.onerror = () => { console.warn('Watcher SSE disconnected'); };
+        }
+
+        function switchWatcherSubTab(tab) {
+            watcherSubTab = tab;
+            document.querySelectorAll('#watcherSubTabs .btn').forEach(b => b.classList.remove('btn-primary'));
+            const btn = document.getElementById('btnWatcher' + tab.charAt(0).toUpperCase() + tab.slice(1));
+            if (btn) btn.classList.add('btn-primary');
+            renderWatcherContent();
+        }
+
+        function renderWatcherContent() {
+            if (watcherSubTab === 'pool') renderWatcherPool();
+            else if (watcherSubTab === 'limit') renderWatcherLimits();
+            else if (watcherSubTab === 'surge') renderWatcherSurge();
+            else if (watcherSubTab === 'sector') renderWatcherSector();
+            else if (watcherSubTab === 'flow') renderWatcherFlow();
+        }
+
+        function renderWatcherPool() {
+            const container = document.getElementById('watcherContent');
+            if (!poolStocks.length) {
+                container.innerHTML = '<p class="text-dim" style="text-align:center;padding:40px;">-- 等待数据 --</p>';
+                return;
+            }
+            let html = '<table class="data-table"><thead><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th><th>成交额</th></tr></thead><tbody>';
+            poolStocks.forEach(s => {
+                const pct = s.change_pct || 0;
+                const color = pct > 0 ? 'var(--green)' : (pct < 0 ? 'var(--red)' : '');
+                html += `<tr>
+                    <td>${s.code}</td><td>${s.name || '--'}</td>
+                    <td>${(s.price||0).toFixed(2)}</td>
+                    <td style="color:${color}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</td>
+                    <td>${s.amount ? (s.amount/1e8).toFixed(2)+'亿' : '--'}</td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function renderWatcherLimits() {
+            const container = document.getElementById('watcherContent');
+            if (!limitAlerts.length) {
+                container.innerHTML = '<p class="text-dim" style="text-align:center;padding:40px;">-- 暂无涨跌停 --</p>';
+                return;
+            }
+            let html = '';
+            limitAlerts.slice(0, 30).forEach(a => {
+                const isUp = a.type === 'limit_up';
+                html += `<div class="signal-row ${isUp ? 'signal-buy' : 'signal-sell'}">
+                    <div class="signal-info">
+                        <div><span class="signal-code">${a.code}</span> <span class="signal-name">${a.name||'--'}</span></div>
+                        <div class="signal-meta">
+                            ${isUp ? '🟢涨停' : '🔴跌停'} ${a.change_pct}% | 封单: ${(a.seal_amount/1e8).toFixed(1)}亿 | ${a.seal_strength}
+                        </div>
+                    </div>
+                </div>`;
+            });
+            container.innerHTML = html;
+        }
+
+        function renderWatcherSurge() {
+            const container = document.getElementById('watcherContent');
+            const all = [...surgeAlerts].slice(0, 30);
+            if (!all.length) {
+                container.innerHTML = '<p class="text-dim" style="text-align:center;padding:40px;">-- 暂无异常波动 --</p>';
+                return;
+            }
+            container.innerHTML = all.map(a => {
+                const isUp = a.type === 'surge_up';
+                return `<div class="signal-row"><div class="signal-info">
+                    <div><span class="signal-code">${a.code}</span> <span class="signal-name">${a.name||'--'}</span></div>
+                    <div class="signal-meta">${isUp?'🟢拉升':'🔴跳水'} ${a.change_pct}% | 从${a.from_price}→${a.price}</div>
+                </div></div>`;
+            }).join('');
+        }
+
+        function renderWatcherFlow() {
+            const container = document.getElementById('watcherContent');
+            const all = [...flowAlerts].slice(0, 30);
+            if (!all.length) {
+                container.innerHTML = '<p class="text-dim" style="text-align:center;padding:40px;">-- 暂无资金流告警 --</p>';
+                return;
+            }
+            container.innerHTML = all.map(a => {
+                const isIn = a.type === 'big_inflow';
+                return `<div class="signal-row"><div class="signal-info">
+                    <div><span class="signal-code">${a.code}</span> <span class="signal-name">${a.name||'--'}</span></div>
+                    <div class="signal-meta">${isIn?'🟢主力流入':'🔴主力流出'} ${(Math.abs(a.net_flow)/1e8).toFixed(2)}亿</div>
+                </div></div>`;
+            }).join('');
+        }
+
+        function renderWatcherSector() {
+            const container = document.getElementById('watcherContent');
+            if (!sectorData.concept.length && !sectorData.industry.length) {
+                container.innerHTML = '<p class="text-dim" style="text-align:center;padding:40px;">-- 等待板块数据 --</p>';
+                return;
+            }
+            let html = '<div style="display:flex;gap:16px;"><div style="flex:1"><h4>概念板块</h4>';
+            sectorData.concept.slice(0, 15).forEach(s => {
+                html += `<div style="padding:4px 0;border-bottom:1px solid var(--border)">${s.name}</div>`;
+            });
+            html += '</div><div style="flex:1"><h4>行业板块</h4>';
+            sectorData.industry.slice(0, 15).forEach(s => {
+                html += `<div style="padding:4px 0;border-bottom:1px solid var(--border)">${s.name}</div>`;
+            });
+            html += '</div></div>';
+            container.innerHTML = html;
+        }
 
         // ========== Init ==========
         document.addEventListener('DOMContentLoaded', () => {
@@ -1051,6 +1307,7 @@
             refreshOrders();
             refreshPool();
             checkMonitorStatus();
+            checkWatcherStatus();
 
             // Auto refresh: 10s for status
             refreshTimer = setInterval(() => {

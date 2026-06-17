@@ -367,8 +367,10 @@ app.mount("/static", StaticFiles(directory=web_dir), name="static")
 
 @app.on_event("startup")
 async def startup_event():
-    """在 uvicorn 启动后设置事件循环，供 MonitorEngine 跨线程 SSE 推送使用"""
+    """在 uvicorn 启动后设置事件循环，供 MonitorEngine / MarketWatcherEngine 跨线程 SSE 推送使用"""
     MonitorEngine.get_instance().set_event_loop(asyncio.get_running_loop())
+    from broker.market_watcher import MarketWatcherEngine
+    MarketWatcherEngine.get_instance().set_event_loop(asyncio.get_running_loop())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2009,6 +2011,62 @@ async def monitor_stream():
             raise
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ============================================================
+# 盯盘 API
+# ============================================================
+
+@app.post("/api/watcher/start")
+async def watcher_start(request: MonitorStartRequest = MonitorStartRequest()):
+    """启动盯盘"""
+    from broker.market_watcher import MarketWatcherEngine
+    engine = MarketWatcherEngine.get_instance()
+    if not engine._event_loop:
+        engine.set_event_loop(asyncio.get_running_loop())
+    stock_pool = request.stock_pool
+    if not stock_pool:
+        stock_pool = LIVE_TRADING_CONFIG.get('scan', {}).get('stock_pool', [])
+    if not stock_pool:
+        raise HTTPException(status_code=400, detail="股票池为空")
+    return engine.start(stock_pool)
+
+
+@app.post("/api/watcher/stop")
+async def watcher_stop():
+    """停止盯盘"""
+    from broker.market_watcher import MarketWatcherEngine
+    return MarketWatcherEngine.get_instance().stop()
+
+
+@app.get("/api/watcher/status")
+async def watcher_status():
+    """获取盯盘状态"""
+    from broker.market_watcher import MarketWatcherEngine
+    engine = MarketWatcherEngine.get_instance()
+    return {"running": engine.is_running}
+
+
+@app.get("/api/watcher/stream")
+async def watcher_stream():
+    """盯盘 SSE 推送"""
+    from broker.market_watcher import MarketWatcherEngine
+    engine = MarketWatcherEngine.get_instance()
+    queue = engine._sse.subscribe()
+
+    async def event_gen():
+        try:
+            while True:
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {data}\n\n"
+                except asyncio.TimeoutError:
+                    yield f": heartbeat\n\n"
+        except asyncio.CancelledError:
+            engine._sse.unsubscribe(queue)
+            raise
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 # ============================================================
