@@ -325,6 +325,40 @@ _RUNTIME_STATE_FILES = [
 ]
 
 
+def restore_runtime_state_if_needed():
+    """如果运行时状态文件丢失（git pull --rebase 可能触发删除），从最新备份恢复。"""
+    import shutil
+    backup_root = Path(DATA_CACHE_DIR) / "backups"
+    if not backup_root.exists():
+        return
+
+    missing = [f for f in _RUNTIME_STATE_FILES if not (Path(DATA_CACHE_DIR) / f).exists()]
+    if not missing:
+        return
+
+    # 按日期倒序找最新备份
+    backups = sorted(
+        [d for d in backup_root.iterdir() if d.is_dir()],
+        key=lambda d: d.name, reverse=True,
+    )
+    for backup_dir in backups:
+        restored = 0
+        for fname in missing:
+            src = backup_dir / fname
+            dst = Path(DATA_CACHE_DIR) / fname
+            if src.exists():
+                try:
+                    shutil.copy2(src, dst)
+                    restored += 1
+                except Exception as e:
+                    logger.warning(f"恢复失败 {fname}: {e}")
+        if restored > 0:
+            logger.warning(
+                f"检测到 {len(missing)} 个状态文件丢失，已从 {backup_dir.name} 恢复 {restored} 个"
+            )
+            return
+
+
 def backup_runtime_state():
     """启动时自动备份运行时状态文件到 data_cache/backups/YYYY-MM-DD/"""
     import shutil
@@ -362,6 +396,7 @@ def backup_runtime_state():
         logger.info(f"运行时状态已备份: {backed} 个文件 → {backup_dir}")
 
 
+restore_runtime_state_if_needed()
 backup_runtime_state()
 
 # ============================================================
