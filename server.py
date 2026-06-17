@@ -313,6 +313,58 @@ async def market_scheduler(live_server, db, fetcher, calendar):
 
 
 # ============================================================
+# 启动时备份运行时状态（防止意外丢失持仓/风控/股票池数据）
+# ============================================================
+
+_RUNTIME_STATE_FILES = [
+    "sim_account.json",
+    "risk_state.json",
+    "trade_checklist.json",
+    "live_stock_pool.json",
+    "signals.json",
+]
+
+
+def backup_runtime_state():
+    """启动时自动备份运行时状态文件到 data_cache/backups/YYYY-MM-DD/"""
+    import shutil
+    backup_root = DATA_CACHE_DIR / "backups"
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    backup_dir = backup_root / today_str
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    backed = 0
+    for fname in _RUNTIME_STATE_FILES:
+        src = DATA_CACHE_DIR / fname
+        if src.exists():
+            dst = backup_dir / fname
+            try:
+                shutil.copy2(src, dst)
+                backed += 1
+            except Exception as e:
+                logger.warning(f"备份失败 {fname}: {e}")
+
+    # 清理 30 天前的旧备份
+    cutoff = datetime.now() - datetime.timedelta(days=30)
+    try:
+        for d in backup_root.iterdir():
+            if d.is_dir():
+                try:
+                    d_date = datetime.strptime(d.name, "%Y-%m-%d")
+                    if d_date < cutoff:
+                        shutil.rmtree(d)
+                except (ValueError, OSError):
+                    pass
+    except Exception:
+        pass
+
+    if backed > 0:
+        logger.info(f"运行时状态已备份: {backed} 个文件 → {backup_dir}")
+
+
+backup_runtime_state()
+
+# ============================================================
 # v2.0 Module Initialization
 # ============================================================
 
