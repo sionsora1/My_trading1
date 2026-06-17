@@ -875,6 +875,34 @@
             return codes;
         }
 
+        async function checkMonitorStatus() {
+            try {
+                const r = await fetch('/api/monitor/status').then(res => res.json());
+                if (r.running) {
+                    document.getElementById('btnMonitorStart').style.display = 'none';
+                    document.getElementById('btnMonitorStop').style.display = '';
+                    document.getElementById('monitorStatus').textContent = '运行中';
+                    document.getElementById('monitorStatus').style.color = 'var(--green)';
+                    document.getElementById('monitorAlertCount').textContent = r.total_alerts || 0;
+                    connectSSE();
+                } else {
+                    document.getElementById('btnMonitorStart').style.display = '';
+                    document.getElementById('btnMonitorStop').style.display = 'none';
+                    document.getElementById('monitorStatus').textContent = '未启动';
+                    document.getElementById('monitorStatus').style.color = 'var(--text-dim)';
+                }
+            } catch (e) {
+                // 后端不可用时静默忽略
+            }
+        }
+
+        function syncMonitorRunning(stockCount) {
+            document.getElementById('btnMonitorStart').style.display = 'none';
+            document.getElementById('btnMonitorStop').style.display = '';
+            document.getElementById('monitorStatus').textContent = '运行中';
+            document.getElementById('monitorStatus').style.color = 'var(--green)';
+        }
+
         async function startMonitor() {
             const stockPool = getCurrentStockPool();
             if (stockPool.length === 0) {
@@ -882,20 +910,25 @@
                 return;
             }
 
-            const r = await fetch('/api/monitor/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ stock_pool: stockPool })
-            }).then(res => res.json());
-            if (r.status === 'started') {
-                document.getElementById('btnMonitorStart').style.display = 'none';
-                document.getElementById('btnMonitorStop').style.display = '';
-                document.getElementById('monitorStatus').textContent = '运行中';
-                document.getElementById('monitorStatus').style.color = 'var(--green)';
-                connectSSE();
-                showToast('大单监控已启动', 'success');
-            } else {
-                showToast('启动失败: ' + (r.detail || '未知错误'), 'error');
+            try {
+                const r = await fetch('/api/monitor/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ stock_pool: stockPool })
+                }).then(res => res.json());
+                if (r.status === 'started') {
+                    syncMonitorRunning(r.stock_count);
+                    connectSSE();
+                    showToast(`大单监控已启动 (${r.stock_count}只股票)`, 'success');
+                } else if (r.status === 'already_running') {
+                    syncMonitorRunning(r.stock_count);
+                    connectSSE();
+                    showToast('监控已在运行中', 'info');
+                } else {
+                    showToast('启动失败: ' + (r.message || r.detail || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showToast('启动失败: 网络错误', 'error');
             }
         }
 
@@ -1017,6 +1050,7 @@
             refreshSignals();
             refreshOrders();
             refreshPool();
+            checkMonitorStatus();
 
             // Auto refresh: 10s for status
             refreshTimer = setInterval(() => {
