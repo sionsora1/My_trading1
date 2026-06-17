@@ -434,6 +434,7 @@
                         <button class="btn btn-sm btn-primary" id="btnFilterAll" onclick="filterAlerts('all')">全部</button>
                         <button class="btn btn-sm" id="btnFilterBuy" onclick="filterAlerts('buy')">🟢 仅买入</button>
                         <button class="btn btn-sm" id="btnFilterSell" onclick="filterAlerts('sell')">🔴 仅卖出</button>
+                        <button class="btn btn-sm" id="btnFilterNeutral" onclick="filterAlerts('neutral')">🟡 中性</button>
                         <button class="btn btn-sm btn-danger" onclick="clearAlerts()" style="margin-left: auto;">🗑 清空</button>
                     </div>
                     <div style="max-height: 250px; overflow-y: auto;" id="alertList">
@@ -1013,6 +1014,11 @@
                 filtered = allAlerts.filter(a => ((a.side || a.direction) || '').toLowerCase() === 'buy');
             } else if (monitorFilter === 'sell') {
                 filtered = allAlerts.filter(a => ((a.side || a.direction) || '').toLowerCase() === 'sell');
+            } else if (monitorFilter === 'neutral') {
+                filtered = allAlerts.filter(a => {
+                    const d = ((a.side || a.direction) || '').toLowerCase();
+                    return d === 'neutral' || d === 'unknown';
+                });
             }
 
             if (!filtered.length) {
@@ -1023,26 +1029,44 @@
             container.innerHTML = filtered.map(a => {
                 const dir = ((a.side || a.direction) || '').toLowerCase();
                 const isBuy = dir === 'buy';
-                const isUnknown = dir === 'unknown';
-                const colorClass = isBuy ? 'text-green' : (isUnknown ? 'text-yellow' : 'text-red');
-                const label = isBuy ? '买入' : (isUnknown ? '中性' : '卖出');
-                const icon = isBuy ? '🟢' : (isUnknown ? '🟡' : '🔴');
+                const isSell = dir === 'sell';
+                const colorClass = isBuy ? 'text-green' : (isSell ? 'text-red' : 'text-yellow');
+                const label = isBuy ? '买入' : (isSell ? '卖出' : '中性');
+                const icon = isBuy ? '🟢' : (isSell ? '🔴' : '🟡');
+
+                // 级别显示
+                const levelMap = { super_large: '🔴超大单', large: '🟡大单', volume_spike: '⚪放量' };
+                const levelLabel = levelMap[a.level] || a.level || '--';
+
+                // MAD 倍数
+                const madInfo = a.mad_multiple ? `${a.mad_multiple}×MAD` : '';
+
+                // 东方财富验证
+                let fundInfo = '';
+                if (a.super_large_flow || a.large_flow) {
+                    const sl = a.super_large_flow ? (a.super_large_flow/1e4).toFixed(0) + '万' : '--';
+                    const lg = a.large_flow ? (a.large_flow/1e4).toFixed(0) + '万' : '--';
+                    fundInfo = ` | 超大单:${sl} 大单:${lg}`;
+                }
+
                 const reasonParts = [];
                 if (a.hands) reasonParts.push(`${a.hands}手`);
                 if (a.amount) reasonParts.push(`${(a.amount/10000).toFixed(0)}万元`);
                 const reasonText = reasonParts.length ? reasonParts.join(' / ') : '--';
+
                 return `
-                <div class="signal-row ${isBuy ? 'signal-buy' : (isUnknown ? '' : 'signal-sell')}">
+                <div class="signal-row ${isBuy ? 'signal-buy' : (isSell ? 'signal-sell' : '')}">
                     <div class="signal-info">
                         <div>
                             <span class="signal-code">${a.code || '--'}</span>
                             <span class="signal-name">${a.name || '--'}</span>
+                            <span style="font-size:11px;margin-left:6px;">${levelLabel}</span>
                             <span class="signal-meta"> | ${a._time || '--'}</span>
                         </div>
-                        <div class="signal-reason">${reasonText}</div>
+                        <div class="signal-reason">${reasonText} ${madInfo}</div>
                         <div class="signal-meta">
                             <span class="${colorClass}">${icon} ${label}</span>
-                            | 价格: ${(a.price || 0).toFixed(2)} | 量: ${a.volume || '--'} | 额: ${a.amount ? (a.amount/10000).toFixed(0) + '万' : '--'}
+                            | 价格: ${(a.price || 0).toFixed(2)}${fundInfo}
                         </div>
                     </div>
                 </div>`;

@@ -1,13 +1,17 @@
 """
-大单监控模块 — 实时检测大额成交并推送 SSE 告警
+大单监控模块 — 双通道检测大额成交并推送 SSE 告警
+
+通道1 (TDX): 实时价量 → MAD 动态基线 → 量价异动检测
+通道2 (东方财富): 分钟级资金流向 → 超大单/大单/中单/小单分类
 
 组件:
-    Alert          — 告警值对象（不可变）
-    QuoteSnapshot  — 实时行情快照
-    TDXQuotesPoller — 通过 pytdx 逐只获取实时快照
-    Detector       — 大单判定引擎
-    SSEManager     — SSE 连接池管理
-    MonitorEngine  — 编排层（单例，后台线程）
+    Alert              — 告警值对象（不可变，含订单规模分类）
+    QuoteSnapshot      — 实时行情快照
+    TDXQuotesPoller    — 通过 pytdx 逐只获取实时快照
+    EastMoneyFundPoller — 东方财富资金流向拉取器
+    Detector           — MAD 动态基线大单判定引擎
+    SSEManager         — SSE 连接池管理
+    MonitorEngine      — 编排层（单例，后台双线程）
 """
 
 from __future__ import annotations
@@ -15,7 +19,6 @@ from __future__ import annotations
 import sys
 import os
 
-# 项目根目录加入 sys.path，确保子模块导入一致
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
@@ -24,11 +27,16 @@ import asyncio
 import dataclasses
 import json
 import logging
+import math
+import random
+import statistics
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+
+import requests
 
 from config.settings import DATA_SOURCE_CONFIG
 
@@ -43,16 +51,20 @@ logger = logging.getLogger(__name__)
 class Alert:
     """大单告警值对象 — 不可变，天然线程安全"""
 
-    code: str          # 股票代码 '600519'
-    name: str          # 股票名称 '贵州茅台'
-    direction: str     # 'buy' | 'sell' | 'unknown'
-    volume: int        # 区间成交量（股）
-    hands: int         # 区间成交量（手）= volume // 100
-    amount: float      # 区间成交额（元）
-    price: float       # 当前价格
-    change_pct: float  # 区间价格变动 %
-    time: str          # 数据时间 '14:32:15'
-    timestamp: str     # ISO 格式 '2026-06-17T14:32:15'
+    code: str              # 股票代码 '600519'
+    name: str              # 股票名称 '贵州茅台'
+    direction: str         # 'buy' | 'sell' | 'neutral'
+    level: str             # 'super_large' | 'large' | 'volume_spike'
+    volume: int            # 区间成交量（股）
+    hands: int             # 区间成交量（手）= volume // 100
+    amount: float          # 区间成交额（元）
+    price: float           # 当前价格
+    change_pct: float      # 区间价格变动 %
+    mad_multiple: float    # 偏离 MAD 倍数
+    super_large_flow: float  # 超大单净流入（东方财富，元/分钟）
+    large_flow: float        # 大单净流入（东方财富，元/分钟）
+    time: str              # 数据时间 '14:32:15'
+    timestamp: str         # ISO 格式 '2026-06-17T14:32:15'
 
     def to_sse_data(self) -> str:
         """序列化为 SSE data 字段（JSON 字符串）"""
@@ -90,14 +102,7 @@ class QuoteSnapshot:
 
 
 class TDXQuotesPoller:
-    """通过 pytdx 逐只获取实时行情快照。
-
-    设计要点:
-    - 每次 poll() 对列表中的股票逐一查询
-    - 返回 Dict[str, QuoteSnapshot]，key 为纯数字代码
-    - 单只失败不影响其他股票，失败的记录 warn 日志
-    - 不在交易时段直接返回空字典
-    """
+    """通过 pytdx 逐只获取实时行情快照。"""
 
     def __init__(
         self,
@@ -111,93 +116,54 @@ class TDXQuotesPoller:
         )
         self._timeout: float = connect_timeout
 
-    # ------------------------------------------------------------------
-    # 交易时间判断
-    # ------------------------------------------------------------------
-
     @staticmethod
     def is_trading_time() -> bool:
-        """判断当前是否在 A 股交易时段。
-
-        集合竞价阶段 9:15-9:25 视为非交易时段（量价不稳定）。
-        有效时段: 9:25-11:30, 13:00-15:00，周一至周五。
-        """
+        """判断当前是否在 A 股交易时段。"""
         now = datetime.now()
-        # 周末
-        if now.weekday() >= 5:  # Saturday=5, Sunday=6
+        if now.weekday() >= 5:
             return False
-
         t = now.time()
         morning_start = t.replace(hour=9, minute=25, second=0, microsecond=0)
         morning_end = t.replace(hour=11, minute=30, second=0, microsecond=0)
         afternoon_start = t.replace(hour=13, minute=0, second=0, microsecond=0)
         afternoon_end = t.replace(hour=15, minute=0, second=0, microsecond=0)
-
         return (morning_start <= t <= morning_end) or (afternoon_start <= t <= afternoon_end)
 
-    # ------------------------------------------------------------------
-    # 行情轮询
-    # ------------------------------------------------------------------
-
     def poll(self, codes: List[str]) -> Dict[str, "QuoteSnapshot"]:
-        """轮询获取实时行情快照。
-
-        Args:
-            codes: 纯数字股票代码列表，如 ['600519', '000001']
-
-        Returns:
-            Dict[str, QuoteSnapshot]，key 为纯数字代码。
-            失败或不在交易时段的股票不出现在结果中。
-        """
+        """轮询获取实时行情快照。"""
         if not codes:
             return {}
-
         if not self.is_trading_time():
-            logger.debug("当前非交易时段，跳过轮询")
             return {}
 
         from pytdx.hq import TdxHq_API
 
         api = TdxHq_API(auto_retry=True, raise_exception=False)
         connected = False
-
-        # 尝试连接服务器
         for ip, port in self._servers:
             try:
                 if api.connect(ip, port, time_out=self._timeout):
                     connected = True
-                    logger.debug(f"TDX 轮询连接成功: {ip}:{port}")
                     break
             except Exception:
                 continue
-
         if not connected:
-            logger.warning("TDX 轮询: 所有服务器连接失败")
             return {}
 
         results: Dict[str, QuoteSnapshot] = {}
         now_str = datetime.now().strftime("%H:%M:%S")
-
         for code in codes:
             market = 1 if code.startswith("6") else 0
             try:
                 quotes = api.get_security_quotes([(market, code)])
                 if not quotes:
-                    logger.debug(f"TDX 行情为空: {code}")
                     continue
-
                 q = quotes[0]
                 price = float(q.get("price", 0) or 0)
                 if price <= 0:
-                    continue  # 停牌或无数据
-
-                # 计算涨跌幅（相对昨收）
+                    continue
                 pre_close = float(q.get("last_close", 0) or 0)
-                if pre_close > 0:
-                    change_pct = round((price - pre_close) / pre_close * 100, 2)
-                else:
-                    change_pct = 0.0
-
+                change_pct = round((price - pre_close) / pre_close * 100, 2) if pre_close > 0 else 0.0
                 snapshot = QuoteSnapshot(
                     code=code,
                     name=str(q.get("name", "")),
@@ -215,214 +181,266 @@ class TDXQuotesPoller:
                     time=now_str,
                 )
                 results[code] = snapshot
-
             except Exception:
-                logger.warning(f"TDX 行情获取失败: {code}", exc_info=False)
+                pass
 
         try:
             api.disconnect()
         except Exception:
             pass
-
         return results
 
 
 # ======================================================================
-# 4. Detector — 大单判定
+# 4. EastMoneyFundPoller — 东方财富资金流向
+# ======================================================================
+
+
+class EastMoneyFundPoller:
+    """从东方财富拉取分钟级资金流向数据（超大单/大单/中单/小单分类）。
+
+    限流策略: 每次请求间隔 ≥ 2 秒，全量拉取周期约 2-3 分钟。
+    """
+
+    # 东方财富市场代码映射
+    _MKT_MAP = {"6": "1", "0": "0", "3": "0"}  # 1=上海, 0=深圳
+
+    def __init__(self, min_interval: float = 3.0):
+        self._min_interval = min_interval
+        self._last_request: float = 0
+        self._cache: Dict[str, dict] = {}  # code → fund_flow_data
+        self._session = requests.Session()
+        self._session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://quote.eastmoney.com/",
+            "Accept": "*/*",
+        })
+
+    def _rate_limit(self) -> None:
+        """确保请求间隔 >= min_interval。"""
+        elapsed = time.time() - self._last_request
+        if elapsed < self._min_interval:
+            time.sleep(self._min_interval - elapsed + random.uniform(0, 1))
+        self._last_request = time.time()
+
+    def _make_secid(self, code: str) -> str:
+        """纯数字代码 → 东方财富 secid 格式。"""
+        prefix = self._MKT_MAP.get(code[0], "0")
+        return f"{prefix}.{code}"
+
+    def fetch(self, code: str) -> Optional[dict]:
+        """拉取单只股票最新一分钟资金流向。
+
+        Returns:
+            {
+                "time": "14:58",
+                "main_force": -674887744.0,    # 主力净流入
+                "small_order": -217811.0,      # 小单净流入
+                "medium_order": 675105570.0,   # 中单净流入
+                "large_order": -309043724.0,   # 大单净流入
+                "super_large_order": -365844020.0,  # 超大单净流入
+            }
+        """
+        self._rate_limit()
+        secid = self._make_secid(code)
+        try:
+            r = self._session.get(
+                "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get",
+                params={
+                    "lmt": "1",
+                    "klt": "1",
+                    "secid": secid,
+                    "fields1": "f1,f2,f3,f7",
+                    "fields2": "f51,f52,f53,f54,f55,f56",
+                },
+                timeout=10,
+            )
+            data = r.json()
+            if data.get("data") and data["data"].get("klines"):
+                parts = data["data"]["klines"][-1].split(",")
+                if len(parts) >= 6:
+                    return {
+                        "time": parts[0].split()[-1] if " " in parts[0] else parts[0],
+                        "main_force": float(parts[1]),
+                        "small_order": float(parts[2]),
+                        "medium_order": float(parts[3]),
+                        "large_order": float(parts[4]),
+                        "super_large_order": float(parts[5]),
+                    }
+        except Exception as e:
+            logger.debug(f"东方财富资金流获取失败 {code}: {e}")
+        return None
+
+    def fetch_all(self, codes: List[str]) -> Dict[str, dict]:
+        """批量拉取，更新内部缓存。"""
+        results: Dict[str, dict] = {}
+        for code in codes:
+            data = self.fetch(code)
+            if data is not None:
+                self._cache[code] = data
+                results[code] = data
+        return results
+
+    def get_cached(self, code: str) -> Optional[dict]:
+        """获取缓存数据（最近 120 秒内有效）。"""
+        return self._cache.get(code)
+
+
+# ======================================================================
+# 5. Detector — MAD 动态基线大单判定
 # ======================================================================
 
 
 class Detector:
-    """大单检测器。
+    """MAD 动态基线检测器。
 
-    判定分为两步:
-    1. 量比检测 — 区间成交量是否远超历史同期均值
-    2. 方向判定 — 根据价格变化判断买入 / 卖出
+    每只股票独立维护 60 秒滑动窗口（12 个 delta_amount）。
+    用中位数绝对偏差 (MAD) 替代固定阈值，自适应每只股票的流动性。
 
-    所有阈值均可通过构造参数或 set_thresholds() 调整。
+    告警级别:
+    - super_large:  delta > median + 8×MAD
+    - large:        delta > median + 5×MAD
+    - volume_spike: delta > median + 3×MAD
+
+    防刷屏:
+    - 同只股票 60 秒冷却期
+    - 每轮最多 10 条告警
     """
 
-    def __init__(
-        self,
-        vol_ratio_threshold: float = 3.0,    # 量比阈值
-        amount_min: float = 5_000_000,       # 最小成交额差（元），默认500万
-        price_change_min: float = 0.3,       # 最小价格波动（%），用于方向判定
-    ):
-        self.vol_ratio = vol_ratio_threshold
-        self.amount_min = amount_min
-        self.price_change_min = price_change_min
-        self._baselines: Dict[str, float] = {}  # {code: 基准区间量（股/秒）}
+    # ── 双重阈值：(delta/median) 比 AND (delta-median)/MAD 比 ──
+    # 两个条件都满足才触发，避免单一指标误判
+    SUPER_LARGE_MEDIAN_RATIO = 5.0    # delta 至少是 median 的 5 倍
+    SUPER_LARGE_MAD = 10.0            # 偏离至少 10 倍 MAD
+    LARGE_MEDIAN_RATIO = 3.0          # delta 至少是 median 的 3 倍
+    LARGE_MAD = 6.0                   # 偏离至少 6 倍 MAD
+    SPIKE_MEDIAN_RATIO = 2.0          # delta 至少是 median 的 2 倍
+    SPIKE_MAD = 4.0                   # 偏离至少 4 倍 MAD
 
-    # ------------------------------------------------------------------
-    # 配置
-    # ------------------------------------------------------------------
+    # ── 滑窗参数 ──
+    WINDOW_SIZE = 12     # 60 秒 / 5 秒间隔
+    COOLDOWN_SEC = 60    # 同股票冷却时间
 
-    def set_thresholds(self, **kwargs: Any) -> None:
-        """运行时动态调整阈值。
+    def __init__(self):
+        # 每只股票的 delta 滑窗 {code: [(timestamp, delta_amt, delta_vol, delta_buy, delta_sell), ...]}
+        self._windows: Dict[str, list] = {}
+        # 冷却期 {code: last_alert_timestamp}
+        self._cooldowns: Dict[str, float] = {}
+        # 历史基线（冷启动用） {code: baseline_rate}
+        self._history_baselines: Dict[str, float] = {}
 
-        Example:
-            detector.set_thresholds(vol_ratio_threshold=4.0, amount_min=10_000_000)
-        """
-        for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
+    def set_history_baselines(self, baselines: Dict[str, float]) -> None:
+        """设置历史同时段基准量（来自 _compute_baselines）。"""
+        self._history_baselines = baselines
 
-    def set_baselines(self, baselines: Dict[str, float]) -> None:
-        """设置每只股票的基准区间成交量（股 / 秒）。
-
-        baselines 由外部计算（基于近 20 日同时段均值），传入此方法。
-        """
-        self._baselines = baselines
-
-    # ------------------------------------------------------------------
-    # 检测
-    # ------------------------------------------------------------------
-
-    def detect(
-        self,
-        code: str,
-        prev: Optional["QuoteSnapshot"],
-        curr: "QuoteSnapshot",
-    ) -> Optional["Alert"]:
-        """对比前后两帧快照，判定是否触发大单告警。
-
-        Args:
-            code: 股票代码
-            prev: 上一帧快照（首次为 None，不触发）
-            curr: 当前帧快照
-
-        Returns:
-            Alert 对象（触发时）或 None（未触发）
-        """
-        if prev is None:
-            return None
-
-        # 计算区间量价变化
-        delta_volume = curr.volume - prev.volume
-        delta_amount = curr.amount - prev.amount
-
-        if delta_volume <= 0:
-            return None
-
-        # 量比计算
-        baseline_rate = self._baselines.get(code, 0.0)
-        time_diff = self._compute_interval_seconds(prev.time, curr.time)
-        if time_diff <= 0:
-            time_diff = 5  # 默认 5 秒间隔
-
-        baseline_vol = baseline_rate * time_diff
-        if baseline_vol > 0:
-            vol_ratio = delta_volume / baseline_vol
-        else:
-            # 无基准量 → 只用成交额判定
-            vol_ratio = 999.0 if delta_amount >= self.amount_min else 0.0
-
-        # 阈值判定
-        if vol_ratio < self.vol_ratio or delta_amount < self.amount_min:
-            return None
-
-        # 方向判定
-        if prev.price > 0:
-            price_change = (curr.price - prev.price) / prev.price * 100
-        else:
-            price_change = 0.0
-
-        if price_change >= self.price_change_min:
-            direction = "buy"
-        elif price_change <= -self.price_change_min:
-            direction = "sell"
-        else:
-            direction = "unknown"
-
-        hands = int(delta_volume // 100)
-        timestamp = datetime.now().isoformat()
-
-        return Alert(
-            code=code,
-            name=curr.name,
-            direction=direction,
-            volume=int(delta_volume),
-            hands=hands,
-            amount=round(delta_amount, 2),
-            price=curr.price,
-            change_pct=round(price_change, 2),
-            time=curr.time,
-            timestamp=timestamp,
-        )
-
-    def detect_batch(
-        self,
-        prev_snapshots: Dict[str, "QuoteSnapshot"],
-        curr_snapshots: Dict[str, "QuoteSnapshot"],
-    ) -> List["Alert"]:
-        """批量检测，返回所有触发的告警。
-
-        Args:
-            prev_snapshots: 上一轮快照字典
-            curr_snapshots: 当前轮快照字典
-
-        Returns:
-            告警列表（按触发顺序）
-        """
-        alerts: List[Alert] = []
-        for code, curr in curr_snapshots.items():
-            prev = prev_snapshots.get(code)
-            alert = self.detect(code, prev, curr)
-            if alert is not None:
-                alerts.append(alert)
-        return alerts
-
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
+    def feed(self, code: str, delta_amt: float, delta_vol: float,
+             delta_buy: float, delta_sell: float) -> None:
+        """喂入一个新 delta 数据点到滑窗。"""
+        if code not in self._windows:
+            self._windows[code] = []
+        window = self._windows[code]
+        now = time.time()
+        window.append((now, delta_amt, delta_vol, delta_buy, delta_sell))
+        # 清理过期数据（超过 60 秒）
+        self._windows[code] = [(t, a, v, b, s) for t, a, v, b, s in window
+                               if now - t <= 60]
 
     @staticmethod
-    def _compute_interval_seconds(prev_time: str, curr_time: str) -> float:
-        """计算两个 HH:MM:SS 格式时间字符串之间的秒数差。"""
-        try:
-            fmt = "%H:%M:%S"
-            t0 = datetime.strptime(prev_time, fmt)
-            t1 = datetime.strptime(curr_time, fmt)
-            return (t1 - t0).total_seconds()
-        except Exception:
+    def _mad(values: List[float]) -> float:
+        """中位数绝对偏差。"""
+        if len(values) < 3:
             return 0.0
+        median = statistics.median(values)
+        abs_dev = [abs(v - median) for v in values]
+        return statistics.median(abs_dev)
+
+    def check(self, code: str, delta_amt: float, delta_vol: float,
+              delta_buy: float, delta_sell: float) -> Optional[Tuple[str, float]]:
+        """检测是否触发告警。
+
+        Returns:
+            (level, mad_multiple) 或 None
+        """
+        window = self._windows.get(code, [])
+        if len(window) < self.WINDOW_SIZE:
+            # 冷启动：数据点不足，用历史基线兜底
+            baseline_rate = self._history_baselines.get(code, 0.0)
+            if baseline_rate > 0:
+                # 5秒基准量 × 窗口期间 = 5 * baseline_rate
+                expected = baseline_rate * 5 * self.WINDOW_SIZE
+                if expected > 0 and delta_amt > expected * self.MAD_SPIKE:
+                    mad_mul = delta_amt / expected if expected > 0 else 0
+                    return ("volume_spike", round(mad_mul, 1))
+            return None
+
+        # 提取 delta_amt 序列
+        deltas = [d[1] for d in window]
+        median = statistics.median(deltas)
+        mad = self._mad(deltas)
+        # MAD=0 时回退用均值的 10% 作为最小偏差（极少发生，仅极低波动股）
+        if mad <= 0:
+            mean_val = sum(deltas) / len(deltas)
+            mad = mean_val * 0.1 if mean_val > 0 else 1.0
+            if mad <= 0:
+                mad = 1.0
+
+        deviation = delta_amt - median
+        mad_multiple = deviation / mad if mad > 0 else deviation
+        median_ratio = delta_amt / median if median > 0 else delta_amt
+
+        # 检测冷却
+        now = time.time()
+        last = self._cooldowns.get(code, 0)
+        if now - last < self.COOLDOWN_SEC:
+            return None
+
+        # 双重阈值：中位数比 AND MAD倍数 同时达标
+        if median_ratio >= self.SUPER_LARGE_MEDIAN_RATIO and mad_multiple >= self.SUPER_LARGE_MAD:
+            return ("super_large", round(mad_multiple, 1))
+        elif median_ratio >= self.LARGE_MEDIAN_RATIO and mad_multiple >= self.LARGE_MAD:
+            return ("large", round(mad_multiple, 1))
+        elif median_ratio >= self.SPIKE_MEDIAN_RATIO and mad_multiple >= self.SPIKE_MAD:
+            return ("volume_spike", round(mad_multiple, 1))
+        return None
+
+    def mark_alerted(self, code: str) -> None:
+        """记录冷却时间。"""
+        self._cooldowns[code] = time.time()
+
+    def get_window_info(self, code: str) -> dict:
+        """获取滑窗统计信息（调试用）。"""
+        window = self._windows.get(code, [])
+        if len(window) < 3:
+            return {"count": len(window)}
+        deltas = [d[1] for d in window]
+        return {
+            "count": len(deltas),
+            "median": round(statistics.median(deltas), 0),
+            "mad": round(self._mad(deltas), 0),
+            "last_delta": round(deltas[-1], 0),
+        }
 
 
 # ======================================================================
-# 5. SSEManager — SSE 连接池管理
+# 6. SSEManager — SSE 连接池管理
 # ======================================================================
 
 
 class SSEManager:
-    """SSE 连接管理器。
-
-    设计要点:
-    - 每个 SSE 连接对应一个 asyncio.Queue
-    - push() 广播到所有活跃连接
-    - 客户端断开时由调用方负责调用 unsubscribe()
-    - 定期心跳（30s）防止代理 / 负载均衡断开
-    """
+    """SSE 连接管理器。"""
 
     def __init__(self, max_queue_size: int = 500):
         self._queues: List[asyncio.Queue] = []
         self._max_size = max_queue_size
 
     def subscribe(self) -> asyncio.Queue:
-        """新客户端订阅，返回专属队列。
-
-        Returns:
-            asyncio.Queue（maxsize=self._max_size）
-        """
         q: asyncio.Queue = asyncio.Queue(maxsize=self._max_size)
         self._queues.append(q)
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
-        """客户端断开时取消订阅。
-
-        Args:
-            q: subscribe() 返回的队列
-        """
         try:
             self._queues.remove(q)
         except ValueError:
@@ -430,21 +448,14 @@ class SSEManager:
 
     @property
     def active_count(self) -> int:
-        """活跃连接数"""
         return len(self._queues)
 
     async def push(self, alert: "Alert") -> None:
-        """广播一条告警到所有连接。
-
-        队列满时丢弃最旧消息再放入新消息。
-        队列已关闭或异常时自动移除。
-        """
         dead: List[asyncio.Queue] = []
         for q in self._queues:
             try:
                 q.put_nowait(alert)
             except asyncio.QueueFull:
-                # 队列满 → 丢弃最旧 -> 放入新消息
                 try:
                     q.get_nowait()
                     q.put_nowait(alert)
@@ -452,7 +463,6 @@ class SSEManager:
                     dead.append(q)
             except Exception:
                 dead.append(q)
-
         for q in dead:
             try:
                 self._queues.remove(q)
@@ -460,12 +470,10 @@ class SSEManager:
                 pass
 
     async def push_heartbeat(self) -> None:
-        """发送心跳消息到所有连接。"""
         heartbeat = json.dumps({
             "type": "heartbeat",
             "time": datetime.now().strftime("%H:%M:%S"),
         }, ensure_ascii=False)
-
         dead: List[asyncio.Queue] = []
         for q in self._queues:
             try:
@@ -478,7 +486,6 @@ class SSEManager:
                     dead.append(q)
             except Exception:
                 dead.append(q)
-
         for q in dead:
             try:
                 self._queues.remove(q)
@@ -487,74 +494,64 @@ class SSEManager:
 
 
 # ======================================================================
-# 6. MonitorEngine — 编排层（单例）
+# 7. MonitorEngine — 编排层（单例，双通道）
 # ======================================================================
 
 
 class MonitorEngine:
     """大单监控引擎（单例）。
 
-    生命周期:
-    1. start(stock_pool) → 初始化基准量 → 启动后台轮询线程
-    2. _poll_loop() → 每 5s 轮询 → 检测 → 推送
-    3. stop() → 设置停止标志 → 等待线程结束 → 清理资源
+    双通道检测:
+    1. TDX 实时价量 → MAD 动态基线 → 量价异动
+    2. 东方财富资金流 → 超大单/大单分类 → 交叉验证
 
-    线程安全:
-    - 轮询在 daemon 线程中执行
-    - SSE 推送在 asyncio 事件循环中执行
-    - Alert 是不可变值对象，天然线程安全
-    - 状态变量使用 threading.Lock 保护
+    生命周期:
+    1. start(stock_pool) → 计算历史基线 → 启动双后台线程
+    2. _poll_loop() → 每 5s 轮询 TDX → MAD 检测 → 推送
+    3. _fund_flow_loop() → 每 60s 拉取东方财富资金流 → 缓存
+    4. stop() → 停止线程 → 清理
     """
 
     _instance: Optional["MonitorEngine"] = None
     _instance_lock = threading.Lock()
 
-    # ------------------------------------------------------------------
-    # 单例
-    # ------------------------------------------------------------------
-
     @classmethod
     def get_instance(cls) -> "MonitorEngine":
-        """获取单例实例（线程安全）。"""
         if cls._instance is None:
             with cls._instance_lock:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
 
-    # ------------------------------------------------------------------
-    # 构造
-    # ------------------------------------------------------------------
-
     def __init__(self):
-        # 防止重复初始化（单例模式下 __init__ 可能被多次调用）
         if hasattr(self, "_poller"):
             return
 
         self._poller = TDXQuotesPoller()
+        self._fund_poller = EastMoneyFundPoller()
         self._detector = Detector()
         self._sse = SSEManager()
 
         self._thread: Optional[threading.Thread] = None
+        self._fund_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self._lock = threading.Lock()
         self._alerts: List[Alert] = []
         self._prev_snapshots: Dict[str, QuoteSnapshot] = {}
         self._stock_pool: List[str] = []
-        self._interval: float = 5.0  # 轮询间隔（秒）
+        self._interval: float = 5.0
+        self._fund_interval: float = 60.0
         self._max_alerts: int = 500
+        self._max_per_cycle: int = 10
         self._baseline_days: int = 20
-        self._stock_names: Dict[str, str] = {}  # code → name 映射
 
-        # asyncio 事件循环引用（由 set_event_loop 设置，用于跨线程 SSE 推送）
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
-
-        # 统计
         self._started_at: Optional[str] = None
         self._last_poll_at: Optional[str] = None
         self._total_alerts: int = 0
+        self._stock_names: Dict[str, str] = {}
 
-        logger.info("MonitorEngine 初始化完成")
+        logger.info("MonitorEngine 初始化完成 (MAD动态基线 + 东方财富双通道)")
 
     # ------------------------------------------------------------------
     # 属性
@@ -565,14 +562,6 @@ class MonitorEngine:
         return self._running.is_set()
 
     @property
-    def started_at(self) -> Optional[str]:
-        return self._started_at
-
-    @property
-    def last_poll_at(self) -> Optional[str]:
-        return self._last_poll_at
-
-    @property
     def total_alerts(self) -> int:
         return self._total_alerts
 
@@ -581,47 +570,42 @@ class MonitorEngine:
         return len(self._stock_pool) if self._stock_pool else 0
 
     @property
-    def interval_seconds(self) -> float:
-        return self._interval
-
-    @property
     def sse_manager(self) -> SSEManager:
-        """暴露 SSEManager 供 server.py 的 SSE endpoint 使用"""
         return self._sse
 
-    # ------------------------------------------------------------------
-    # 事件循环引用
-    # ------------------------------------------------------------------
-
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """设置 asyncio 事件循环引用，用于跨线程 SSE 推送。
-
-        必须在启动 FastAPI app 的事件循环中调用一次。
-        """
         self._event_loop = loop
         logger.info("MonitorEngine 事件循环已设置")
 
     # ------------------------------------------------------------------
-    # 启停控制
+    # 股票名称
+    # ------------------------------------------------------------------
+
+    def _load_stock_names(self) -> None:
+        try:
+            from data.database import SQLiteManager
+            db = SQLiteManager()
+            rows = db._conn.execute("SELECT ts_code, name FROM stock_info").fetchall()
+            for row in rows:
+                code = row["ts_code"].replace(".SH", "").replace(".SZ", "")
+                if row["name"]:
+                    self._stock_names[code] = row["name"]
+            db.close()
+            logger.debug(f"加载了 {len(self._stock_names)} 个股票名称")
+        except Exception as e:
+            logger.error(f"股票名称加载失败: {e}")
+
+    # ------------------------------------------------------------------
+    # 启停
     # ------------------------------------------------------------------
 
     def start(self, stock_pool: List[str]) -> Dict[str, Any]:
-        """启动监控。
-
-        Args:
-            stock_pool: 股票代码列表 ['600519', '000333', ...]
-
-        Returns:
-            {"status": "started", "stock_count": int}
-            {"status": "already_running"}
-        """
         with self._lock:
             if self._running.is_set():
                 return {"status": "already_running", "stock_count": self.stock_count}
 
             self._stock_pool = list(stock_pool)
             if not self._stock_pool:
-                logger.warning("MonitorEngine.start: 股票池为空")
                 return {"status": "error", "message": "股票池为空"}
 
             self._running.set()
@@ -629,60 +613,41 @@ class MonitorEngine:
             self._alerts = []
             self._prev_snapshots = {}
             self._total_alerts = 0
-
-            # 加载股票名称映射
             self._load_stock_names()
 
+            # 启动 TDX 轮询线程
             self._thread = threading.Thread(
-                target=self._poll_loop,
-                daemon=True,
-                name="monitor-engine",
+                target=self._poll_loop, daemon=True, name="monitor-tdx",
             )
             self._thread.start()
 
-            logger.info(f"MonitorEngine 已启动: {len(self._stock_pool)} 只股票")
+            # 启动东方财富资金流线程
+            self._fund_thread = threading.Thread(
+                target=self._fund_flow_loop, daemon=True, name="monitor-fund",
+            )
+            self._fund_thread.start()
+
+            logger.info(f"MonitorEngine 已启动: {len(self._stock_pool)} 只股票 (双通道)")
             return {"status": "started", "stock_count": len(self._stock_pool)}
 
     def stop(self) -> Dict[str, Any]:
-        """停止监控。
-
-        Returns:
-            {"status": "stopped", "total_alerts": int}
-            {"status": "not_running"}
-        """
         with self._lock:
             if not self._running.is_set():
                 return {"status": "not_running"}
-
             self._running.clear()
 
-        thread = self._thread
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=5.0)
-            if thread.is_alive():
-                logger.warning("MonitorEngine 后台线程未能在 5 秒内退出")
+        for t in (self._thread, self._fund_thread):
+            if t is not None and t.is_alive():
+                t.join(timeout=5.0)
 
         logger.info(f"MonitorEngine 已停止，累计告警: {self._total_alerts}")
         return {"status": "stopped", "total_alerts": self._total_alerts}
 
-    # ------------------------------------------------------------------
-    # 历史查询
-    # ------------------------------------------------------------------
-
     def get_history(self, limit: int = 100) -> List[Alert]:
-        """获取最近的历史告警。
-
-        Args:
-            limit: 返回条数上限，默认 100
-
-        Returns:
-            告警列表（按时间升序，最近的在后）
-        """
         with self._lock:
             return list(self._alerts[-limit:])
 
     def get_status(self) -> Dict[str, Any]:
-        """获取引擎运行状态快照。"""
         return {
             "running": self.is_running,
             "stock_count": self.stock_count,
@@ -693,56 +658,38 @@ class MonitorEngine:
             "sse_connections": self._sse.active_count,
         }
 
-    # ------------------------------------------------------------------
-    # 股票名称
-    # ------------------------------------------------------------------
-
-    def _load_stock_names(self) -> None:
-        """从数据库加载股票 code → name 映射。"""
-        try:
-            from data.database import SQLiteManager
-            db = SQLiteManager()
-            rows = db._conn.execute(
-                "SELECT ts_code, name FROM stock_info"
-            ).fetchall()
-            for row in rows:
-                code = row["ts_code"].replace(".SH", "").replace(".SZ", "")
-                if row["name"]:
-                    self._stock_names[code] = row["name"]
-            db.close()
-            logger.debug(f"MonitorEngine 加载了 {len(self._stock_names)} 个股票名称")
-        except Exception as e:
-            logger.error(f"股票名称加载失败: {e}", exc_info=True)
-
-    # ------------------------------------------------------------------
-    # 后台轮询循环
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # 通道1: TDX 实时价量 → MAD 检测
+    # ==================================================================
 
     def _poll_loop(self) -> None:
-        """后台轮询主循环（运行在 daemon 线程中）。"""
-        logger.info("MonitorEngine 轮询循环启动")
+        """TDX 轮询主循环（每 5 秒）。"""
+        logger.info("MonitorEngine TDX 轮询启动")
 
-        # 首次启动时计算基准量
+        # 冷启动：计算历史基线
         try:
             self._compute_baselines()
         except Exception as e:
             logger.error(f"基准量计算失败: {e}")
 
+        # 预热：先累积几轮数据不管测
+        warmup_rounds = 3
+
         while self._running.is_set():
             if not TDXQuotesPoller.is_trading_time():
-                time.sleep(30)  # 非交易时段慢速检查
+                time.sleep(30)
                 continue
 
             try:
                 curr = self._poller.poll(self._stock_pool)
             except Exception as e:
-                logger.error(f"轮询失败: {e}")
+                logger.error(f"TDX 轮询失败: {e}")
                 time.sleep(10)
                 continue
 
             self._last_poll_at = datetime.now().isoformat()
 
-            # 注入数据库股票名称（TDX单股查询可能不返回名称）
+            # 注入名称
             if self._stock_names and curr:
                 curr = {
                     code: dataclasses.replace(
@@ -752,98 +699,173 @@ class MonitorEngine:
                 }
 
             if not curr:
-                # 首次轮询或空结果 → 保存快照但不检测
-                if self._prev_snapshots:
-                    pass  # 有前次快照但本次无数据（可能都在停牌）
-                else:
-                    self._prev_snapshots = curr
+                self._prev_snapshots = curr
                 time.sleep(self._interval)
                 continue
 
-            # 检测大单
+            # 计算 delta 并喂入滑窗
             prev = self._prev_snapshots
-            alerts = self._detector.detect_batch(prev, curr)
+            deltas: Dict[str, Tuple[float, float, float, float]] = {}
+            for code, snap in curr.items():
+                p = prev.get(code) if prev else None
+                if p is None or p.volume <= 0:
+                    continue
+                da = snap.amount - p.amount
+                dv = snap.volume - p.volume
+                db = (snap.active_buy or 0) - (p.active_buy or 0)
+                ds = (snap.active_sell or 0) - (p.active_sell or 0)
+                if dv <= 0 or da <= 0:
+                    continue
+                deltas[code] = (da, dv, db, ds)
+                self._detector.feed(code, da, dv, db, ds)
+
             self._prev_snapshots = curr
 
-            # 处理告警
-            for alert in alerts:
+            if warmup_rounds > 0:
+                warmup_rounds -= 1
+                time.sleep(self._interval)
+                continue
+
+            # 检测
+            candidates: List[Tuple[str, str, float, float, float, float, float]] = []
+            for code, (da, dv, db, ds) in deltas.items():
+                result = self._detector.check(code, da, dv, db, ds)
+                if result is not None:
+                    level, mad_mul = result
+                    candidates.append((code, level, mad_mul, da, dv, db, ds))
+
+            # 按 MAD 倍数排序，每轮最多 10 条
+            candidates.sort(key=lambda x: x[2], reverse=True)
+            alerts_this_cycle: List[Alert] = []
+            for code, level, mad_mul, da, dv, db, ds in candidates[:self._max_per_cycle]:
+                snap = curr.get(code)
+                if snap is None:
+                    continue
+
+                # 交叉验证：查东方财富资金流缓存
+                fund_data = self._fund_poller.get_cached(code)
+                super_large_flow = fund_data.get("super_large_order", 0) if fund_data else 0
+                large_flow = fund_data.get("large_order", 0) if fund_data else 0
+
+                # 方向判定：主动买卖盘占比
+                total_active = db + ds
+                if total_active > 0:
+                    buy_ratio = db / total_active
+                else:
+                    buy_ratio = 0.5
+                if buy_ratio > 0.7:
+                    direction = "buy"
+                elif buy_ratio < 0.3:
+                    direction = "sell"
+                else:
+                    direction = "neutral"
+
+                alert = Alert(
+                    code=code,
+                    name=snap.name or code,
+                    direction=direction,
+                    level=level,
+                    volume=int(dv),
+                    hands=int(dv // 100),
+                    amount=round(da, 2),
+                    price=snap.price,
+                    change_pct=round(
+                        (snap.price - prev[code].price) / prev[code].price * 100, 2
+                    ) if code in prev and prev[code].price > 0 else 0.0,
+                    mad_multiple=mad_mul,
+                    super_large_flow=round(super_large_flow, 2),
+                    large_flow=round(large_flow, 2),
+                    time=snap.time,
+                    timestamp=datetime.now().isoformat(),
+                )
+                alerts_this_cycle.append(alert)
+                self._detector.mark_alerted(code)
+
+            # 推送
+            for alert in alerts_this_cycle:
                 with self._lock:
                     self._alerts.append(alert)
                     self._total_alerts += 1
                     if len(self._alerts) > self._max_alerts:
                         self._alerts = self._alerts[-self._max_alerts:]
 
-                # 跨线程推送到 SSE
                 loop = self._event_loop
                 if loop is not None and loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        self._sse.push(alert), loop
-                    )
-                else:
-                    logger.debug("事件循环未就绪，跳过 SSE 推送")
+                    asyncio.run_coroutine_threadsafe(self._sse.push(alert), loop)
 
-            if alerts:
+            if alerts_this_cycle:
                 logger.info(
-                    f"检测到 {len(alerts)} 条大单告警: "
+                    f"检测到 {len(alerts_this_cycle)} 条大单告警: "
                     + ", ".join(
-                        f"{a.name}({a.code}) {a.direction} {a.hands}手"
-                        for a in alerts[:5]
+                        f"{a.name}({a.code}) {a.direction} {a.hands}手 "
+                        f"[{a.level} {a.mad_multiple}×MAD]"
+                        for a in alerts_this_cycle[:5]
                     )
-                    + ("..." if len(alerts) > 5 else "")
+                    + ("..." if len(alerts_this_cycle) > 5 else "")
                 )
 
             time.sleep(self._interval)
 
-        logger.info("MonitorEngine 轮询循环退出")
+        logger.info("MonitorEngine TDX 轮询退出")
 
-    # ------------------------------------------------------------------
-    # 基准量计算
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # 通道2: 东方财富资金流轮询
+    # ==================================================================
+
+    def _fund_flow_loop(self) -> None:
+        """东方财富资金流轮询（每 60 秒拉一批）。"""
+        logger.info("MonitorEngine 东方财富资金流轮询启动")
+        while self._running.is_set():
+            if not TDXQuotesPoller.is_trading_time():
+                time.sleep(60)
+                continue
+            try:
+                results = self._fund_poller.fetch_all(self._stock_pool)
+                if results:
+                    logger.debug(f"东方财富资金流: 更新 {len(results)} 只")
+            except Exception as e:
+                logger.warning(f"东方财富资金流轮询异常: {e}")
+            time.sleep(self._fund_interval)
+        logger.info("MonitorEngine 东方财富资金流轮询退出")
+
+    # ==================================================================
+    # 历史基准量计算（冷启动预热 MAD 基线）
+    # ==================================================================
 
     def _compute_baselines(self) -> None:
-        """计算每只股票的基准区间成交量（股 / 秒）。
+        """计算每只股票的基准区间成交量（股/秒），用于 MAD 冷启动。
 
-        方法: 取近 20 个交易日的日均成交量，除以 14400 秒（4 小时交易时段）。
-        优先使用 minute_bars 按当前时段计算，回退到 daily_bars 按全天均摊。
+        近 20 个交易日的日均成交量 / 14400 秒。
         """
-        logger.info(f"开始计算基准量: {len(self._stock_pool)} 只股票, {self._baseline_days} 天窗口")
-
+        logger.info(f"开始计算历史基线: {len(self._stock_pool)} 只股票")
         try:
             from data.database import SQLiteManager
         except ImportError:
-            logger.warning("无法导入 SQLiteManager，跳过基准量计算")
             return
 
         baselines: Dict[str, float] = {}
-
         now = datetime.now()
-        current_time_str = now.strftime("%H:%M:%S")
         end_date = now.strftime("%Y%m%d")
-        start_date = (now - timedelta(days=60)).strftime("%Y%m%d")  # 预留足够窗口
+        start_date = (now - timedelta(days=60)).strftime("%Y%m%d")
 
-        db: Optional[SQLiteManager] = None
+        db: Optional[Any] = None
         try:
             db = SQLiteManager()
         except Exception as e:
-            logger.warning(f"数据库连接失败，跳过基准量计算: {e}")
+            logger.warning(f"数据库连接失败: {e}")
             return
 
         try:
             for code in self._stock_pool:
                 ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
                 try:
-                    vol_per_sec = self._calc_baseline_for_stock(
-                        db, ts_code, start_date, end_date, current_time_str
-                    )
+                    vol_per_sec = self._calc_baseline_for_stock(db, ts_code, start_date, end_date)
                     if vol_per_sec is not None and vol_per_sec > 0:
                         baselines[code] = vol_per_sec
-                except Exception as e:
-                    logger.debug(f"基准量计算失败 {code}: {e}")
-
-            self._detector.set_baselines(baselines)
-            logger.info(
-                f"基准量计算完成: {len(baselines)}/{len(self._stock_pool)} 只股票"
-            )
+                except Exception:
+                    pass
+            self._detector.set_history_baselines(baselines)
+            logger.info(f"历史基线计算完成: {len(baselines)}/{len(self._stock_pool)} 只")
         finally:
             try:
                 db.close()
@@ -851,74 +873,16 @@ class MonitorEngine:
                 pass
 
     @staticmethod
-    def _calc_baseline_for_stock(
-        db: Any,
-        ts_code: str,
-        start_date: str,
-        end_date: str,
-        current_time_str: str,
-    ) -> Optional[float]:
-        """计算单只股票的基准区间成交量（股/秒）。
-
-        优先尝试 minute_bars（精确到当前时段），
-        回退到 daily_bars（全天均摊）。
-        """
-        # 策略 1: 使用 minute_bars 获取近 20 日同时段成交量
-        try:
-            # 提取当前时分以便匹配
-            hour_min = current_time_str[:5]  # '14:32'
-            bars = db.get_minute_bars(ts_code, start_date, end_date, 5)
-
-            if bars and len(bars) >= 20:
-                # 取最近 20 个不同交易日的对应时段数据
-                daily_volumes: Dict[str, List[float]] = {}
-                for row in bars:
-                    trade_time = row.get("trade_time", "")
-                    if not trade_time:
-                        continue
-                    # trade_time 格式: '2026-06-15 14:32:00'
-                    try:
-                        date_part = trade_time[:10]
-                        time_part = trade_time[11:16]
-                    except Exception:
-                        continue
-
-                    # 取当前时段前后 5 分钟的数据（放宽匹配范围）
-                    if time_part >= hour_min:
-                        if date_part not in daily_volumes:
-                            daily_volumes[date_part] = []
-                        vol = float(row.get("volume", 0) or 0)
-                        daily_volumes[date_part].append(vol)
-
-                if daily_volumes:
-                    # 按日期排序，取最近 20 个交易日
-                    sorted_dates = sorted(daily_volumes.keys(), reverse=True)[:20]
-                    total_vol = 0.0
-                    count = 0
-                    for d in sorted_dates:
-                        vols = daily_volumes[d]
-                        if vols:
-                            total_vol += vols[-1]  # 最接近当前时刻的分钟量
-                            count += 1
-                    if count > 0:
-                        # 每分钟成交量转换为每秒成交量
-                        return (total_vol / count) / 60.0
-        except Exception:
-            pass
-
-        # 策略 2: 回退到 daily_bars —— 日均成交量 / 14400 秒
+    def _calc_baseline_for_stock(db: Any, ts_code: str, start_date: str,
+                                  end_date: str) -> Optional[float]:
+        """单只股票的每秒基准成交量（日均成交量 / 14400 秒）。"""
         try:
             rows = db.get_daily_bars(ts_code, start_date, end_date)
             if rows and len(rows) >= 5:
-                # 取最近 20 个交易日的日均成交量
                 recent = rows[-20:]
-                total_vol = sum(
-                    float(r.get("volume", 0) or 0) for r in recent
-                )
+                total_vol = sum(float(r.get("volume", 0) or 0) for r in recent)
                 avg_daily_vol = total_vol / len(recent)
-                # 4 小时交易 = 14400 秒
                 return avg_daily_vol / 14400.0
         except Exception:
             pass
-
         return None
