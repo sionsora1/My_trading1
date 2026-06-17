@@ -21,6 +21,33 @@ logger = get_logger('data', 'data.log')
 class DataFetcher:
     """A股数据获取器（门面模式 — 支持多数据源自动回退）"""
 
+    @staticmethod
+    def _parse_ts_code(ts_code: str) -> tuple:
+        """Parse a stock code into (symbol, market).
+
+        Args:
+            ts_code: Stock code such as '600519', '600519.SH', or
+                '000001.SZ'.
+
+        Returns:
+            Tuple of (six-digit symbol, market), where market is 'sh' or 'sz'.
+        """
+        symbol = str(ts_code).strip().upper().split('.')[0]
+        if not symbol:
+            raise ValueError('ts_code cannot be empty')
+
+        market = 'sh' if symbol.startswith(('6', '9')) else 'sz'
+        return symbol, market
+
+    @staticmethod
+    def _volume_series(df: pd.DataFrame) -> pd.Series:
+        """Return the volume column regardless of source naming."""
+        if 'vol' in df.columns:
+            return df['vol']
+        if 'volume' in df.columns:
+            return df['volume']
+        raise KeyError("DataFrame must contain 'vol' or 'volume'")
+
     def __init__(self, primary: str = None, fallback: str = None):
         """
         Args:
@@ -209,7 +236,7 @@ class DataFetcher:
             'ts_code': ts_code,
             'code': symbol,
             'close': latest['close'],
-            'volume': latest['vol'],
+            'volume': latest.get('volume', latest.get('vol', 0)),
             'market_cap': market_cap,
             'ma5': latest.get('ma5', latest['close']),
             'ma10': latest.get('ma10', latest['close']),
@@ -218,7 +245,7 @@ class DataFetcher:
             'high_1y': daily['high'].max(),
             'low_1y': daily['low'].min(),
             'price_percentile_1y': latest.get('price_percentile_1y', 0.5),
-            'volume_ma20': latest.get('volume_ma20', latest['vol']),
+            'volume_ma20': latest.get('volume_ma20', latest.get('volume', latest.get('vol', 0))),
             'turnover': turnover,
             'pe': pe,
             'pb': pb,
@@ -361,7 +388,7 @@ class DataFetcher:
                         'open': row['open'],
                         'high': row['high'],
                         'low': row['low'],
-                        'volume': row['vol'],
+                        'volume': row.get('volume', row.get('vol', 0)),
                         'prev_close': close / (1 + row['pct_chg'] / 100) if 'pct_chg' in row and not pd.isna(row['pct_chg']) and row['pct_chg'] != -100 else close,
                         'trade_date': date,
                         'ma5': safe_val(row.get('ma5'), close),
@@ -372,7 +399,7 @@ class DataFetcher:
                         'low_1y': safe_val(row.get('rolling_low_1y'), close),
                         'price_percentile_1y': safe_val(row.get('price_percentile_1y'), 0.5),
                         'pe_percentile_5y': 0.5,
-                        'volume_ma20': safe_val(row.get('volume_ma20'), row['vol']),
+                        'volume_ma20': safe_val(row.get('volume_ma20'), row.get('volume', row.get('vol', 0))),
                         'turnover': safe_val(row.get('turnover_rate'), 3),
                         'pe': ptl_pe,
                         'pb': ptl_pb,
@@ -486,8 +513,9 @@ class DataFetcher:
         """计算成交量均线"""
         if windows is None:
             windows = [5, 10, 20]
+        volume = self._volume_series(df)
         for w in windows:
-            df[f'volume_ma{w}'] = df['vol'].rolling(window=w).mean()
+            df[f'volume_ma{w}'] = volume.rolling(window=w).mean()
         return df
 
     def calculate_returns(self, df: pd.DataFrame, periods=None) -> pd.DataFrame:

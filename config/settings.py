@@ -9,7 +9,9 @@
 
 # API鉴权密钥 — 保护实盘交易相关接口
 # 设置 None 禁用鉴权（开发环境），设置字符串启用（生产环境）
-API_KEY = 'quant-trading-2026'  # TODO: 生产环境改为强密码
+import os as _os
+
+API_KEY = _os.getenv('QUANT_API_KEY', 'quant-trading-2026')
 
 # 需要鉴权的路径前缀
 PROTECTED_PATH_PREFIXES = ['/api/live', '/api/account']
@@ -19,7 +21,6 @@ PROTECTED_PATH_PREFIXES = ['/api/live', '/api/account']
 # ============================================================
 
 # 数据缓存目录（相对于项目根目录的绝对路径，避免CWD变化导致路径错误）
-import os as _os
 _BASE_DIR = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 DATA_CACHE_DIR = _os.path.join(_BASE_DIR, 'data_cache')
 
