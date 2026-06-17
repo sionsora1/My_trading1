@@ -1,12 +1,34 @@
 # 更新日志
 
-## v2.2.1 (2026-06-17)
+## v2.3.0 (2026-06-17)
+
+### 新增
+- **大单监控 MAD 动态基线**：替代固定阈值，每只股票独立维护 60 秒滑窗
+  - 中位数绝对偏差 (MAD) 自适应流动性：高流动股自动提高阈值，低流动股自动降低
+  - 双重判定：`delta/median` 比 AND `(delta-median)/MAD` 比 同时达标
+  - 三级告警：超大单(5×med + 10×MAD) / 大单(3×med + 6×MAD) / 放量(2×med + 4×MAD)
+- **东方财富资金流双通道**：`EastMoneyFundPoller` 分钟级超大单/大单/中单/小单分类
+  - TDX 量价异动 + 东方财富订单规模交叉验证
+- **盯盘板块资金流**：`SectorHeatmap` 增强，计算板块均涨幅/主力净流入/领涨股
+- **启动自动备份恢复**：`server.py` 启动时自动备份 5 个运行时状态文件
+  - 丢失时自动从最新备份恢复，30 天旧备份自动清理
 
 ### 修复
-- 大单监控页面按钮状态不同步：页面加载时不检查后端状态，按钮始终显示"未开启"
-- 监控已运行时点"开启"提示"启动失败"而非"已在运行中"
-- `startMonitor()` 增加 `already_running` 状态处理，不再误报错误
-- `DOMContentLoaded` 新增 `checkMonitorStatus()` 自动同步按钮状态
+- 涨跌停扫描：TDX 批量查询返回 None 导致整批数据丢失 + 股票名称缺失
+  - `_scan_batches` 增加空值检查，`_get_full_stock_list` 同步建立全市场 1863 只代码→名称映射
+- 板块热点：板块名称 GBK 编码损坏导致成分股聚合失败
+- 大单监控：原始固定阈值 (500万/5s AND 3×量比) 过于严格，累计告警为 0
+- 运行时状态文件被 `git pull --rebase` 物理删除
+  - `git rm --cached` 移出跟踪，`.gitignore` 简化为 `data_cache/`
+- 防刷屏：60s 同股票冷却 + 每轮最多 10 条 + 前端中性方向过滤
+
+### 改造
+- `broker/monitor.py`：Detector 全重写为 MAD 滑窗，MonitorEngine 双线程架构
+- `broker/market_watcher.py`：SectorHeatmap 增加 `_enrich_with_quotes()`，LimitUpDownWatcher 名称缓存
+- `server.py`：新增 `restore_runtime_state_if_needed()` + `backup_runtime_state()`
+- `web/live.html`：大单告警渲染改为级别标签 + MAD 倍数 + 资金流验证信息
+- `config/settings.py`：API_KEY 支持 `QUANT_API_KEY` 环境变量
+- `data/fetcher.py`：新增 `_parse_ts_code()` / `_volume_series()` 工具方法
 
 ---
 

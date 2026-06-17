@@ -3,545 +3,256 @@
 ## 1. 架构概览
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          server.py                                   │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐  │
-│  │POST /monitor │  │GET /monitor   │  │GET /monitor/stream (SSE)  │  │
-│  │  /start     │  │  /history     │  │                            │  │
-│  └──────┬──────┘  └──────┬───────┘  └──────────┬─────────────────┘  │
-│         │                │                      │                    │
-│         └────────────────┼──────────────────────┘                    │
-│                          │                                           │
-│                 ┌────────┴────────┐                                  │
-│                 │  MonitorEngine   │  (单例，后台线程)                 │
-│                 │  broker/monitor  │                                  │
-│                 └────────┬────────┘                                  │
-│                          │                                           │
-│          ┌───────────────┼───────────────┐                           │
-│          │               │               │                           │
-│   ┌──────┴──────┐ ┌─────┴──────┐ ┌──────┴──────┐                    │
-│   │ TDXQuotesPoller│ │Detector  │ │SSEManager  │                    │
-│   │ (数据采集)    │ │(大单判定) │ │(消息推送)  │                    │
-│   └──────┬──────┘ └───────────┘ └──────┬──────┘                    │
-│          │                              │                           │
-│   pytdx TCP                              ├── EventSource → live.html │
-│   60.191.117.167:7709                   │                           │
-└──────────────────────────────────────────┴───────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                            server.py                                      │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐       │
+│  │POST /monitor │  │GET /monitor   │  │GET /monitor/stream (SSE)  │       │
+│  │  /start     │  │  /history     │  │                            │       │
+│  └──────┬──────┘  └──────┬───────┘  └──────────┬─────────────────┘       │
+│         │                │                      │                         │
+│         └────────────────┼──────────────────────┘                         │
+│                          │                                                │
+│                 ┌────────┴────────┐                                       │
+│                 │  MonitorEngine   │  (单例，双后台线程)                    │
+│                 │  broker/monitor  │                                       │
+│                 └────────┬────────┘                                       │
+│                          │                                                │
+│     ┌────────────────────┼────────────────────┐                           │
+│     │                    │                    │                           │
+│  ┌──┴──────────┐  ┌──────┴──────┐  ┌─────────┴──────┐                    │
+│  │TDXQuotesPoller│  │EastMoneyFund│  │  Detector     │                    │
+│  │ 实时价量(5s)  │  │Poller(60s) │  │  MAD动态基线  │                    │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬────────┘                    │
+│         │                │                │                               │
+│   pytdx TCP        东方财富HTTP      60s滑窗 × 每只股票                    │
+│         │                │                │                               │
+│         └────────────────┼────────────────┘                               │
+│                          │                                                │
+│                    ┌─────┴──────┐                                         │
+│                    │SSEManager  │                                         │
+│                    │ (消息推送) │                                         │
+│                    └─────┬──────┘                                         │
+│                          │                                                │
+│                    EventSource → live.html                                │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**职责分离**：
+**双通道检测**：
 
-| 模块 | 文件 | 职责 |
-|------|------|------|
-| `TDXQuotesPoller` | `broker/monitor.py` | 通过 pytdx 逐只获取实时快照，返回结构化数据 |
-| `Detector` | `broker/monitor.py` | 对比前后快照，根据阈值判定是否为大单 |
-| `SSEManager` | `broker/monitor.py` | 管理 SSE 连接池，广播消息 |
-| `MonitorEngine` | `broker/monitor.py` | 编排上述三个模块，管理生命周期（start/stop） |
-| API 端点 | `server.py` | 薄层，转发到 MonitorEngine |
-| 前端面板 | `web/live.html` | 开关 + SSE 接收 + 消息列表渲染 |
+| 通道 | 数据源 | 频率 | 用途 |
+|------|--------|------|------|
+| 通道1 — TDX | pytdx 实时行情 | 每 5s | 价格/成交量/内外盘 → MAD 滑窗 → 量价异动 |
+| 通道2 — 东方财富 | push2.eastmoney.com | 每 60s | 分钟级超大单/大单/中单/小单净流入 → 交叉验证 |
 
 ---
 
-## 2. 模块详细设计
+## 2. 核心算法：MAD 动态基线
 
-### 2.1 TDXQuotesPoller — 数据采集
+### 2.1 设计动机
+
+固定阈值（如"5秒成交额500万"）对不同流动性股票完全不适用：
+- 中际旭创日成交300亿，5秒500万是噪音
+- 小盘股日成交5000万，5秒10万就是大单
+
+MAD（中位数绝对偏差）让每只股票自己跟自己比，无需人工设定。
+
+### 2.2 算法流程
+
+```
+初始化（每只股票独立维护）:
+  window = deque(maxlen=12)        # 60 秒滑窗（12 × 5s）
+  baseline_rate = 近20日日均成交量 / 14400   # 冷启动基准
+
+每轮轮询:
+  for code in stock_pool:
+      delta_amt = curr.amount - prev.amount    # 本轮成交额增量
+      delta_vol = curr.volume - prev.volume     # 本轮成交量增量
+      delta_buy = curr.active_buy - prev.active_buy
+      delta_sell = curr.active_sell - prev.active_sell
+
+      window[code].append(delta_amt)            # 喂入滑窗
+
+      if len(window[code]) >= 12:               # 数据足够
+          median = window[code] 的中位数
+          mad = median(|delta - median|)         # 中位数绝对偏差
+          median_ratio = delta_amt / median
+          mad_multiple = (delta_amt - median) / mad
+
+          # 双重阈值判定
+          if median_ratio >= 5 AND mad_multiple >= 10 → super_large
+          if median_ratio >= 3 AND mad_multiple >= 6  → large
+          if median_ratio >= 2 AND mad_multiple >= 4  → volume_spike
+
+      if len(window[code]) < 12:                # 冷启动
+          用历史 baseline 兜底
+```
+
+### 2.3 阈值参数
+
+| 级别 | median 倍数 | MAD 倍数 | 含义 |
+|------|------------|----------|------|
+| 🔴 超大单 | ≥ 5× | ≥ 10× | 极端异常，几乎可以确定是大资金 |
+| 🟡 大单 | ≥ 3× | ≥ 6× | 显著异常放量 |
+| ⚪ 放量 | ≥ 2× | ≥ 4× | 轻度异动，值得关注 |
+
+### 2.4 方向判定
+
+不依赖微小的价格变化，改用主动买卖盘占比：
+
+```
+buy_ratio = delta_active_buy / (delta_active_buy + delta_active_sell)
+buy_ratio > 0.7 → buy
+buy_ratio < 0.3 → sell
+否则 → neutral
+```
+
+### 2.5 东方财富交叉验证
+
+MAD 检测到异动后，查询该股最新一分钟资金流分类数据：
+- 超大单净流入 + 大单净流入 同向 → 确认告警
+- 中单/小单主导 → 降级为放量
+
+### 2.6 防刷屏机制
+
+- 同只股票触发后 **60 秒冷却期**
+- 每轮最多推送 **10 条**，按 MAD 倍数降序
+- 非交易时段自动休眠（30s 慢速检查）
+
+---
+
+## 3. 模块详细设计
+
+### 3.1 Alert — 告警值对象
 
 ```python
-class TDXQuotesPoller:
-    """
-    通过 pytdx 逐只获取实时行情快照。
-
-    设计要点：
-    - 每次调用 poll(codes) 对列表中的股票逐一查询
-    - 返回 Dict[str, QuoteSnapshot]，key 为纯数字代码
-    - 单只失败不影响其他股票，失败的记录 warn 日志
-    - 不在交易时段直接返回空（节约连接）
-    """
-
-    def __init__(self, servers: list[tuple[str, int]], connect_timeout: float = 5.0):
-        self._servers = servers
-        self._timeout = connect_timeout
-
-    def poll(self, codes: list[str]) -> dict[str, "QuoteSnapshot"]:
-        ...
-
-    @staticmethod
-    def is_trading_time() -> bool:
-        """判断当前是否在 A 股交易时段（9:25-11:30, 13:00-15:00，周一至周五）"""
-        ...
-
-
-@dataclass
-class QuoteSnapshot:
-    """单只股票的快照"""
-    code: str           # '600519'
-    name: str           # '贵州茅台'
-    price: float        # 现价
-    open: float
-    high: float
-    low: float
-    volume: float       # 累计成交量（股）
-    amount: float       # 累计成交额（元）
-    change_pct: float   # 涨跌幅 %
-    bid1: float         # 买一价
-    ask1: float         # 卖一价
-    active_buy: float   # 外盘（主动买）
-    active_sell: float  # 内盘（主动卖）
-    time: str           # 数据时间 '14:32:15'
+@dataclass(frozen=True)
+class Alert:
+    code: str              # '600519'
+    name: str              # '贵州茅台'
+    direction: str         # 'buy' | 'sell' | 'neutral'
+    level: str             # 'super_large' | 'large' | 'volume_spike'
+    volume: int            # 区间成交量（股）
+    hands: int             # 区间成交量（手）
+    amount: float          # 区间成交额（元）
+    price: float           # 当前价格
+    change_pct: float      # 区间价格变动 %
+    mad_multiple: float    # 偏离 MAD 倍数
+    super_large_flow: float  # 超大单净流入（东方财富，元/分钟）
+    large_flow: float        # 大单净流入（东方财富，元/分钟）
+    time: str              # '14:32:15'
+    timestamp: str         # ISO 格式
 ```
 
-**并发策略**：逐只串行查询，因为 pytdx 的 `get_security_quotes` 一次连接查一只。81 只股票约需 5-8 秒（单只 ~60-100ms），刚好匹配 5 秒轮询间隔的偏移量。
+### 3.2 EastMoneyFundPoller — 东方财富数据采集
 
-**容错**：单只查询超时 5 秒，失败后 skip 继续下一只。连续 3 轮全部失败则判定连接断开，自动重连。
+```python
+class EastMoneyFundPoller:
+    """
+    从东方财富拉取分钟级资金流向数据。
 
----
+    限流策略: 每次请求间隔 ≥ 3 秒，全量 81 只约 4 分钟。
+    数据格式（每分钟）:
+        time / 主力净流入 / 小单净流入 / 中单净流入 / 大单净流入 / 超大单净流入
 
-### 2.2 Detector — 大单判定
+    API: push2.eastmoney.com/api/qt/stock/fflow/kline/get
+    """
+
+    def fetch(self, code: str) -> dict | None: ...
+    def fetch_all(self, codes: list[str]) -> dict[str, dict]: ...
+    def get_cached(self, code: str) -> dict | None: ...
+```
+
+### 3.3 Detector — MAD 动态基线检测器
 
 ```python
 class Detector:
-    """
-    大单检测器。
+    WINDOW_SIZE = 12       # 60秒 / 5秒间隔
+    COOLDOWN_SEC = 60      # 同股票冷却时间
 
-    判定分为两步：
-    1. 量比检测 — 区间成交量是否远超历史同期均值
-    2. 方向判定 — 根据价格变化和内外盘判断买入/卖出
+    # 双重阈值
+    SUPER_LARGE_MEDIAN_RATIO = 5.0    SUPER_LARGE_MAD = 10.0
+    LARGE_MEDIAN_RATIO = 3.0          LARGE_MAD = 6.0
+    SPIKE_MEDIAN_RATIO = 2.0          SPIKE_MAD = 4.0
 
-    所有阈值均可通过构造函数或 set_thresholds() 调整。
-    """
-
-    def __init__(
-        self,
-        vol_ratio_threshold: float = 3.0,    # 量比阈值
-        amount_min: float = 5_000_000,       # 最小成交额差（元），默认500万
-        price_change_min: float = 0.3,       # 最小价格波动（%），用于方向判定
-    ):
-        self.vol_ratio = vol_ratio_threshold
-        self.amount_min = amount_min
-        self.price_change_min = price_change_min
-        self._baselines: dict[str, float] = {}   # {code: 基准区间量}
-
-    def set_thresholds(self, **kwargs):
-        """运行时动态调整阈值"""
-        for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
-
-    def set_baselines(self, baselines: dict[str, float]):
-        """
-        设置每只股票的基准区间成交量（股/秒）。
-        baselines 由外部计算（基于近20日同时段均值），传入此方法。
-        """
-        self._baselines = baselines
-
-    def detect(
-        self,
-        code: str,
-        prev: QuoteSnapshot | None,
-        curr: QuoteSnapshot,
-    ) -> "Alert | None":
-        """
-        对比前后两帧快照，判定是否触发大单告警。
-
-        Args:
-            code: 股票代码
-            prev: 上一帧快照（首次为 None）
-            curr: 当前帧快照
-
-        Returns:
-            Alert 对象（触发时）或 None（未触发）
-        """
-        ...
-
-    def detect_batch(
-        self,
-        prev_snapshots: dict[str, QuoteSnapshot],
-        curr_snapshots: dict[str, QuoteSnapshot],
-    ) -> list["Alert"]:
-        """批量检测，返回所有触发的告警"""
-        ...
+    def feed(self, code, delta_amt, delta_vol, delta_buy, delta_sell): ...
+    def check(self, code, delta_amt, delta_vol, delta_buy, delta_sell) -> (level, mad_multiple) | None: ...
+    def mark_alerted(self, code): ...
+    def set_history_baselines(self, baselines): ...
 ```
 
-**判定算法详情**：
-
-```
-对于每只股票：
-  interval_seconds = 本次时间 - 上次时间 (秒)
-  delta_volume = curr.volume - prev.volume       # 区间成交量
-  delta_amount = curr.amount - prev.amount       # 区间成交额
-  price_change = (curr.price - prev.price) / prev.price * 100
-
-  # 基准区间量 = 每秒基准量 × 间隔秒数
-  baseline_vol = baselines.get(code, 0) * interval_seconds
-  vol_ratio = delta_volume / baseline_vol if baseline_vol > 0 else 999
-
-  if vol_ratio >= vol_ratio_threshold AND delta_amount >= amount_min:
-      # 方向判定
-      if price_change >= price_change_min:
-          direction = BUY
-      elif price_change <= -price_change_min:
-          direction = SELL
-      else:
-          direction = UNKNOWN
-
-      生成 Alert(code, direction, delta_volume, delta_amount, curr.price, curr.change_pct)
-```
-
-**基准量计算**（由 MonitorEngine 在 start 时调用一次）：
-
-```
-baseline[code] = 取该股近20个交易日中，当前时刻前后5分钟的日均成交量均值 / 300秒
-```
-
----
-
-### 2.3 SSEManager — 消息推送
-
-```python
-class SSEManager:
-    """
-    SSE 连接管理器。
-
-    设计要点：
-    - 每个 SSE 连接对应一个 asyncio.Queue
-    - push() 广播到所有活跃连接
-    - 客户端断开时自动清理队列
-    - 定期心跳（30s），防止代理/负载均衡断开
-    """
-
-    def __init__(self, max_queue_size: int = 500):
-        self._queues: list[asyncio.Queue] = []
-        self._max_size = max_queue_size
-
-    def subscribe(self) -> asyncio.Queue:
-        """新客户端订阅，返回专属队列"""
-        q = asyncio.Queue(maxsize=self._max_size)
-        self._queues.append(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue):
-        """客户端断开时取消订阅"""
-        try:
-            self._queues.remove(q)
-        except ValueError:
-            pass
-
-    async def push(self, alert: "Alert"):
-        """广播一条告警到所有连接"""
-        dead = []
-        for q in self._queues:
-            try:
-                q.put_nowait(alert)
-            except asyncio.QueueFull:
-                # 队列满了丢弃最旧的消息
-                try:
-                    q.get_nowait()
-                    q.put_nowait(alert)
-                except Exception:
-                    pass
-            except Exception:
-                dead.append(q)
-        for q in dead:
-            self._queues.remove(q)
-
-    async def push_heartbeat(self):
-        """发送心跳"""
-        ...
-```
-
----
-
-### 2.4 MonitorEngine — 编排层
+### 3.4 MonitorEngine — 编排层
 
 ```python
 class MonitorEngine:
-    """
-    大单监控引擎（单例）。
+    """单例。双线程：TDX轮询(5s) + 东方财富轮询(60s)。"""
 
-    生命周期：
-    1. start(stock_pool) → 初始化基准量 → 启动后台轮询线程
-    2. _poll_loop() → 每 5s 轮询 → 检测 → 推送
-    3. stop() → 设置停止标志 → 等待线程结束 → 清理资源
-
-    线程安全：
-    - 轮询在 daemon 线程中执行
-    - SSE 推送在 asyncio 事件循环中执行
-    - Alert 对象是不可变值对象，天然线程安全
-    - 状态变量使用 threading.Lock 保护
-    """
-
-    _instance = None
-
-    @classmethod
-    def get_instance(cls) -> "MonitorEngine":
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
-
-    def __init__(self):
-        self._poller = TDXQuotesPoller(servers=[...])
-        self._detector = Detector()
-        self._sse = SSEManager()
-        self._thread: threading.Thread | None = None
-        self._running = threading.Event()
-        self._lock = threading.Lock()
-        self._alerts: list[Alert] = []       # 历史告警（最多 500 条）
-        self._prev_snapshot: dict = {}
-
-    def start(self, stock_pool: list[str]):
-        """启动监控"""
-        with self._lock:
-            if self._running.is_set():
-                return
-            self._stock_pool = list(stock_pool)
-            self._running.set()
-            self._thread = threading.Thread(target=self._poll_loop, daemon=True)
-            self._thread.start()
-
-    def stop(self):
-        """停止监控"""
-        with self._lock:
-            self._running.clear()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    @property
-    def is_running(self) -> bool:
-        return self._running.is_set()
-
-    def get_history(self, limit: int = 100) -> list[Alert]:
-        """获取历史告警"""
-        return self._alerts[-limit:]
+    def start(self, stock_pool):
+        # 1. 加载股票名称
+        # 2. 计算历史冷启动基线
+        # 3. 启动 TDX 轮询线程 _poll_loop()
+        # 4. 启动东方财富轮询线程 _fund_flow_loop()
 
     def _poll_loop(self):
-        """后台轮询主循环"""
-        self._compute_baselines()
+        # 1. TDXQuotesPoller.poll() → 快照
+        # 2. 计算 delta → Detector.feed()
+        # 3. 预热 3 轮
+        # 4. Detector.check() → 候选告警
+        # 5. 查 EastMoneyFundPoller.get_cached() 交叉验证
+        # 6. 排序 + 冷却 + 限流 → SSE 推送
 
-        while self._running.is_set():
-            if not TDXQuotesPoller.is_trading_time():
-                time.sleep(30)   # 非交易时段慢速检查
-                continue
-
-            try:
-                curr = self._poller.poll(self._stock_pool)
-            except Exception as e:
-                logger.error(f"轮询失败: {e}")
-                time.sleep(10)
-                continue
-
-            alerts = self._detector.detect_batch(self._prev_snapshot, curr)
-            self._prev_snapshot = curr
-
-            for alert in alerts:
-                self._alerts.append(alert)
-                if len(self._alerts) > 500:
-                    self._alerts = self._alerts[-500:]
-                # 推送到 SSE（跨线程调度到 asyncio）
-                asyncio.run_coroutine_threadsafe(
-                    self._sse.push(alert), main_event_loop
-                )
-
-            time.sleep(self._interval)
+    def _fund_flow_loop(self):
+        # EastMoneyFundPoller.fetch_all() → 更新缓存
 ```
 
 ---
 
-### 2.5 Alert — 告警值对象
+## 4. API 端点
 
-```python
-@dataclass(frozen=True)   # 不可变，线程安全
-class Alert:
-    code: str          # '600519'
-    name: str          # '贵州茅台'
-    direction: str     # 'buy' | 'sell' | 'unknown'
-    volume: int        # 区间成交量（股）
-    hands: int         # 区间成交量（手）= volume // 100
-    amount: float      # 区间成交额（元）
-    price: float       # 当前价格
-    change_pct: float  # 价格变动 %
-    time: str          # '14:32:15'
-    timestamp: str     # ISO 格式 '2026-06-17T14:32:15'
+与 v2.2 保持一致，Alert 字段有所扩展：
 
-    def to_sse_data(self) -> str:
-        """序列化为 SSE 的 data 字段（JSON）"""
-        return json.dumps(dataclasses.asdict(self), ensure_ascii=False)
-```
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/monitor/start` | 启动监控（可选 body: `{stock_pool: [...]}`） |
+| POST | `/api/monitor/stop` | 停止监控 |
+| GET | `/api/monitor/status` | 运行状态 |
+| GET | `/api/monitor/history?limit=100` | 历史告警 |
+| GET | `/api/monitor/stream` | SSE 实时推送 |
 
 ---
 
-## 3. API 端点设计
-
-所有端点前缀：`/api/monitor`
-
-### 3.1 `POST /api/monitor/start`
-
-```
-Request:  { "stock_pool": ["600519", "000333", ...] }
-           # 不传则使用当前实盘股票池
-
-Response: { "status": "started", "stock_count": 81 }
-
-Error:    400 - 已在运行中
-          500 - 启动失败
-```
-
-### 3.2 `POST /api/monitor/stop`
-
-```
-Response: { "status": "stopped", "total_alerts": 42 }
-
-Error:    400 - 当前未在运行
-```
-
-### 3.3 `GET /api/monitor/status`
-
-```
-Response: {
-    "running": true,
-    "stock_count": 81,
-    "total_alerts": 42,
-    "started_at": "2026-06-17T09:30:00",
-    "last_poll_at": "2026-06-17T14:32:15",
-    "interval_seconds": 5
-}
-```
-
-### 3.4 `GET /api/monitor/history`
-
-```
-Query:    ?limit=50  (可选，默认 100)
-
-Response: {
-    "alerts": [ Alert, Alert, ... ],
-    "total": 42
-}
-```
-
-### 3.5 `GET /api/monitor/stream`（SSE）
-
-```
-Content-Type: text/event-stream
-
-事件格式：
-  event: alert
-  data: {"code":"600519","name":"贵州茅台","direction":"buy","hands":1250,...}
-
-  event: heartbeat
-  data: {"time":"14:32:30"}
-
-  event: status
-  data: {"running":true,"stock_count":81}
-
-客户端重连：EventSource 浏览器原生支持自动重连。
-```
-
----
-
-## 4. 前端集成（live.html）
-
-### 4.1 布局位置
-
-在现有状态栏和控制栏之间，新增一行监控专用栏：
-
-```
-┌─ statusBar ─────────────────────────────────────┐
-│  ● 未启动  |  券商: --  |  模式: --  | ...       │
-└─────────────────────────────────────────────────┘
-┌─ monitorBar（新增）──────────────────────────────┐
-│  📡 大单监控  [▶ 开启] [⏹ 停止]    共 42 条告警 │
-└─────────────────────────────────────────────────┘
-┌─ 控制栏（现有）──────────────────────────────────┐
-│  [启动实盘] [停止] [重置]  ...                    │
-└─────────────────────────────────────────────────┘
-```
-
-### 4.2 消息面板
-
-在现有 tabs 区域新增一个 "📡 大单监控" tab，与持仓/信号并列：
-
-```
-┌─ tabs ──────────────────────────────────────────┐
-│ [信号] [持仓] [订单] [📡 大单监控]               │
-└─────────────────────────────────────────────────┘
-┌─ tab-content（监控面板）─────────────────────────┐
-│  [清空] [仅买入] [仅卖出] [全部]                  │
-│                                                   │
-│  🟢 14:32:15  贵州茅台  大单买入                  │
-│     1,250手  成交1,935万  现价1,548.32 ↑1.2%      │
-│  ───────────────────────────────────────          │
-│  🔴 14:32:18  宁德时代  大单卖出                  │
-│     850手  成交1,276万  现价218.50 ↓0.8%          │
-│  ───────────────────────────────────────          │
-│  ...（最多200条，滚动）                            │
-└─────────────────────────────────────────────────┘
-```
-
-### 4.3 交互逻辑
-
-```
-页面加载：
-  1. 创建 EventSource('/api/monitor/stream')
-  2. 监听 'alert' 事件 → 追加到消息列表顶部
-  3. 监听 'status' 事件 → 更新开关按钮状态
-  4. 调用 GET /api/monitor/status 同步初始状态
-
-开启监控：
-  1. 用户点击 [▶ 开启]
-  2. POST /api/monitor/start (body: 当前实盘股票池)
-  3. 按钮变为 [⏹ 停止]（绿色脉冲动画）
-  4. SSE 开始推送告警
-
-关闭监控：
-  1. 用户点击 [⏹ 停止]
-  2. POST /api/monitor/stop
-  3. 按钮恢复 [▶ 开启]（灰色）
-
-消息过滤：
-  三个快速筛选按钮：全部 / 仅买入 / 仅卖出
-  前端本地过滤，不额外请求
-```
-
-### 4.4 样式规范
-
-复用 live.html 现有 CSS 变量和 class：
-- 卡片使用 `.card` + `.card-header`
-- 买入消息左边框 `var(--green)`，买入标签使用 `.badge-live`
-- 卖出消息左边框 `var(--red)`，卖出标签使用 `.badge-danger`
-- 按钮使用 `.btn .btn-primary` / `.btn .btn-danger`
-- 监控开关激活状态使用脉冲动画（可选）
-
----
-
-## 5. 文件清单
-
-| 文件 | 操作 | 预计行数 |
-|------|------|----------|
-| `broker/monitor.py` | **新建** | ~350 行 |
-| `server.py` | 修改 — 新增 5 个端点 + 导入 MonitorEngine | +60 行 |
-| `web/live.html` | 修改 — 新增监控栏 + 消息面板 tab | +150 行 |
-
----
-
-## 6. 配置与可调参数
-
-所有可调参数集中在 `MonitorEngine` 和 `Detector` 的构造参数中，后续可通过 API 暴露（二期）：
+## 5. 配置参数
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `poll_interval` | 5 | 轮询间隔（秒） |
-| `vol_ratio_threshold` | 3.0 | 量比阈值（实际量 / 基准量） |
-| `amount_min` | 5,000,000 | 最小成交额差（元） |
-| `price_change_min` | 0.3 | 方向判定最小价格波动（%） |
-| `max_alerts` | 500 | 最大历史告警数 |
-| `baseline_days` | 20 | 基准量计算用的历史天数 |
-| `tdx_servers` | 复用 settings.py | TDX 服务器地址 |
+| `_interval` | 5 | TDX 轮询间隔（秒） |
+| `_fund_interval` | 60 | 东方财富轮询间隔（秒） |
+| `WINDOW_SIZE` | 12 | MAD 滑窗数据点数 |
+| `COOLDOWN_SEC` | 60 | 同股票冷却时间（秒） |
+| `_max_per_cycle` | 10 | 每轮最大推送数 |
+| `_max_alerts` | 500 | 内存历史告警上限 |
+| `_baseline_days` | 20 | 冷启动历史天数 |
+| EastMoney `_min_interval` | 3.0 | 东方财富请求间隔（秒） |
 
 ---
 
-## 7. 后续扩展点
+## 6. 前端渲染
 
-- **阈值 API**：`PUT /api/monitor/thresholds` 运行时调整参数
-- **声音告警**：大单触发时播放提示音
-- **桌面通知**：Web Notification API
-- **持久化**：告警写入 SQLite，支持历史回溯
-- **统计面板**：当日大单买入/卖出汇总，净买入量
+告警按级别着色：
+
+```
+🔴 超大单 | 贵州茅台(600519) 🟢买入 | 1250手 / 1935万 | 36.7×MAD | 超大单:+1.2亿 大单:-0.3亿
+🟡 大单   | 宁德时代(300750) 🔴卖出 | 850手 / 1276万  | 7.8×MAD  | 超大单:-0.8亿 大单:+0.1亿
+⚪ 放量   | 兆易创新(603986) 🟡中性 | 200手 / 96万    | 4.6×MAD  | 超大单:-- 大单:--
+```
+
+过滤按钮：全部 / 仅买入 / 仅卖出 / 中性。
+
+---
+
+## 7. 文件清单
+
+| 文件 | 说明 |
+|------|------|
+| `broker/monitor.py` | TDXQuotesPoller + EastMoneyFundPoller + Detector + SSEManager + MonitorEngine |
+| `server.py` | 5 个 API 端点 + MonitorEngine 单例初始化 |
+| `web/live.html` | 监控栏 + 消息面板 + SSE 接收 + 过滤渲染 |
