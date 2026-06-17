@@ -73,7 +73,7 @@ import uvicorn
 import json
 import uuid
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from backtest.engine import BacktestEngine, BacktestConfig
@@ -328,14 +328,14 @@ _RUNTIME_STATE_FILES = [
 def backup_runtime_state():
     """启动时自动备份运行时状态文件到 data_cache/backups/YYYY-MM-DD/"""
     import shutil
-    backup_root = DATA_CACHE_DIR / "backups"
+    backup_root = Path(DATA_CACHE_DIR) / "backups"
     today_str = datetime.now().strftime("%Y-%m-%d")
     backup_dir = backup_root / today_str
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     backed = 0
     for fname in _RUNTIME_STATE_FILES:
-        src = DATA_CACHE_DIR / fname
+        src = Path(DATA_CACHE_DIR) / fname
         if src.exists():
             dst = backup_dir / fname
             try:
@@ -345,7 +345,7 @@ def backup_runtime_state():
                 logger.warning(f"备份失败 {fname}: {e}")
 
     # 清理 30 天前的旧备份
-    cutoff = datetime.now() - datetime.timedelta(days=30)
+    cutoff = datetime.now() - timedelta(days=30)
     try:
         for d in backup_root.iterdir():
             if d.is_dir():

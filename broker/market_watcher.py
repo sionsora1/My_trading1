@@ -274,6 +274,7 @@ class LimitUpDownWatcher:
         self.scan_interval = scan_interval
         self._last_scan: float = 0
         self._cached_stock_list: List[str] = []
+        self._cached_stock_names: Dict[str, str] = {}  # code → name
 
     def _get_full_stock_list(self) -> List[str]:
         """获取全市场A股代码列表（缓存，首次拉取后复用）。
@@ -295,15 +296,27 @@ class LimitUpDownWatcher:
                             stocks = api.get_security_list(0, start)
                             if not stocks:
                                 break
-                            codes.extend([s["code"] for s in stocks if s["code"].startswith(("0", "3"))])
+                            for s in stocks:
+                                code = s["code"]
+                                if code.startswith(("0", "3")):
+                                    codes.append(code)
+                                    name = s.get("name", "") or s.get("stock_name", "")
+                                    if name and code not in self._cached_stock_names:
+                                        self._cached_stock_names[code] = name
                         for start in range(0, 5000, 1000):
                             stocks = api.get_security_list(1, start)
                             if not stocks:
                                 break
-                            codes.extend([s["code"] for s in stocks if s["code"].startswith("6")])
+                            for s in stocks:
+                                code = s["code"]
+                                if code.startswith("6"):
+                                    codes.append(code)
+                                    name = s.get("name", "") or s.get("stock_name", "")
+                                    if name and code not in self._cached_stock_names:
+                                        self._cached_stock_names[code] = name
                         api.disconnect()
                         self._cached_stock_list = codes
-                        logger.info(f"全市场股票列表加载: {len(codes)}只")
+                        logger.info(f"全市场股票列表加载: {len(codes)}只, {len(self._cached_stock_names)}个名称")
                         return codes
                 except Exception:
                     continue
@@ -370,6 +383,8 @@ class LimitUpDownWatcher:
                 try:
                     queries = [(1 if c.startswith("6") else 0, c) for c in batch]
                     quotes = api.get_security_quotes(queries)
+                    if not quotes:
+                        continue
                     for q in quotes:
                         if q is None:
                             continue
@@ -382,6 +397,10 @@ class LimitUpDownWatcher:
                             continue
 
                         code = str(q.get("code", "")).strip()
+                        # TDX批量查询不返回名称，从缓存映射补充
+                        name = str(q.get("name", "")).strip()
+                        if not name and code in self._cached_stock_names:
+                            name = self._cached_stock_names[code]
                         bid_vol = float(q.get("bid_vol1", 0) or 0)
                         ask_vol = float(q.get("ask_vol1", 0) or 0)
                         seal_vol = bid_vol if pct > 0 else ask_vol
@@ -396,7 +415,7 @@ class LimitUpDownWatcher:
                         alert = {
                             "type": "limit_up" if pct > 0 else "limit_down",
                             "code": code,
-                            "name": str(q.get("name", "")),
+                            "name": name,
                             "change_pct": round(pct, 2),
                             "seal_amount": round(seal_amount, 2),
                             "seal_strength": strength,
@@ -424,7 +443,13 @@ class LimitUpDownWatcher:
 
 
 class SectorHeatmap:
-    """板块热点 — 每30秒获取TDX板块数据，缓存复用。"""
+    """板块热点 — 每30秒获取TDX板块数据，计算资金流向和涨跌幅。
+
+    数据来源:
+    1. TDX block_gn.dat / block.dat → 板块成员股代码
+    2. 当前 poll 快照 → 实时价格和内外盘数据
+    3. 交叉计算: 板块均涨幅、主力净流入、领涨股
+    """
 
     def __init__(self, refresh_interval: float = 30.0):
         """
@@ -434,15 +459,25 @@ class SectorHeatmap:
         self.refresh_interval = refresh_interval
         self._last_refresh: float = 0
         self._cached_data: dict = {}
+        # 缓存板块→成员股代码映射（每天刷新一次）
+        self._sector_stocks: Dict[str, List[str]] = {}
+        self._sector_stocks_date: str = ""
 
-    def process(self) -> dict:
+    def process(self, curr_quotes: Dict[str, "QuoteSnapshot"] = None) -> dict:
         """获取板块热点数据（30秒内返回缓存）。
+
+        Args:
+            curr_quotes: 当前轮询快照 {code: QuoteSnapshot}，用于计算板块资金流
 
         Returns:
             {"concept": [...], "industry": [...], "timestamp": "..."}
+            每个板块包含: name, change_pct, net_flow, leading_stock, stock_count
         """
         now = time.time()
         if now - self._last_refresh < self.refresh_interval:
+            # 用最新快照更新缓存中的资金流数据
+            if curr_quotes and self._cached_data:
+                self._cached_data = self._enrich_with_quotes(self._cached_data, curr_quotes)
             return self._cached_data
         self._last_refresh = now
 
@@ -461,21 +496,61 @@ class SectorHeatmap:
                 logger.warning("板块热点: TDX连接失败")
                 return self._cached_data
 
+            # 检查是否需要刷新板块→成员映射（每天一次）
+            today = datetime.now().strftime("%Y%m%d")
+            need_rebuild = (today != self._sector_stocks_date) or (not self._sector_stocks)
+
             for block_file, key in [("block_gn.dat", "concept"), ("block.dat", "industry")]:
                 try:
                     blocks = api.get_and_parse_block_info(block_file)
+                    seen_blocks = set()
                     sector_list = []
-                    for b in blocks[:50]:
-                        sector_list.append({
-                            "code": b.get("code", ""),
-                            "name": b.get("blockname", ""),
-                            "type": key,
-                        })
+                    for b in blocks:
+                        block_name = b.get("blockname", "")
+                        if not block_name or len(block_name) < 2 or '\x00' in block_name:
+                            continue
+                        valid = True
+                        for char in block_name:
+                            cp = ord(char)
+                            if not ((0x20 <= cp <= 0x7E) or (0x4E00 <= cp <= 0x9FFF) or (0x3400 <= cp <= 0x4DBF)):
+                                valid = False
+                                break
+                        if not valid:
+                            continue
+                        if block_name not in seen_blocks:
+                            seen_blocks.add(block_name)
+                            stock_code = b.get("code", "")
+                            sector_list.append({
+                                "code": stock_code,
+                                "name": block_name,
+                                "type": key,
+                                "change_pct": 0,
+                                "net_flow": 0,
+                                "leading_stock": "",
+                                "leading_pct": 0,
+                                "stock_count": 0,
+                            })
+                            # 缓存板块→成员股映射
+                            if need_rebuild:
+                                if block_name not in self._sector_stocks:
+                                    self._sector_stocks[block_name] = []
+                                if stock_code and stock_code not in self._sector_stocks[block_name]:
+                                    self._sector_stocks[block_name].append(stock_code)
+                        if len(sector_list) >= 50:
+                            break
                     result[key] = sector_list
                 except Exception as e:
                     logger.debug(f"板块数据获取失败 {block_file}: {e}")
 
+            if need_rebuild:
+                self._sector_stocks_date = today
+
             api.disconnect()
+
+            # 用当前快照丰富板块数据
+            if curr_quotes:
+                result = self._enrich_with_quotes(result, curr_quotes)
+
             logger.info("板块热点刷新", extra={"data": {
                 "concept_count": len(result["concept"]),
                 "industry_count": len(result["industry"]),
@@ -486,6 +561,47 @@ class SectorHeatmap:
 
         self._cached_data = result
         return result
+
+    def _enrich_with_quotes(self, sector_data: dict, curr_quotes: Dict[str, "QuoteSnapshot"]) -> dict:
+        """用实时行情快照计算板块级别的涨跌幅和资金流向。
+
+        对每个板块，汇总属于该板块且在当前快照中的股票的:
+        - 平均涨跌幅
+        - 净主动买卖 (active_buy - active_sell)
+        - 领涨股
+        """
+        for key in ("concept", "industry"):
+            for sector in sector_data.get(key, []):
+                sector_name = sector.get("name", "")
+                member_codes = self._sector_stocks.get(sector_name, [])
+                if not member_codes:
+                    continue
+
+                total_change = 0.0
+                total_net_flow = 0.0
+                matched = 0
+                leading_code = ""
+                leading_pct = -999
+
+                for code in member_codes:
+                    snap = curr_quotes.get(code)
+                    if snap is None:
+                        continue
+                    matched += 1
+                    total_change += snap.change_pct
+                    net = (snap.active_buy or 0) - (snap.active_sell or 0)
+                    total_net_flow += net
+                    if snap.change_pct > leading_pct:
+                        leading_pct = snap.change_pct
+                        leading_code = code
+
+                sector["change_pct"] = round(total_change / matched, 2) if matched > 0 else 0
+                sector["net_flow"] = round(total_net_flow, 2)
+                sector["leading_stock"] = leading_code
+                sector["leading_pct"] = leading_pct if leading_code else 0
+                sector["stock_count"] = matched
+
+        return sector_data
 
 
 # ======================================================================
@@ -681,14 +797,24 @@ class MarketWatcherEngine:
             except Exception as e:
                 logger.error(f"涨跌停扫描异常: {e}", exc_info=True)
                 limit_alerts = []
+            # 涨跌停走独立TDX批量查询，不走curr轮询，需单独注入数据库名称
+            if self._stock_names and limit_alerts:
+                for a in limit_alerts:
+                    code = a.get("code", "")
+                    if code and (not a.get("name") or a["name"] == code):
+                        a["name"] = self._stock_names.get(code, a.get("name", code))
             try:
-                sector_data = self._sector_heatmap.process()
+                sector_data = self._sector_heatmap.process(curr)
             except Exception as e:
                 logger.error(f"板块热点异常: {e}", exc_info=True)
                 sector_data = {}
 
             # SSE 推送
-            self._push_sse("pool_snapshot", pool_data[0] if pool_data else {})
+            # pool_data[0] 已包含 {"type": "pool_snapshot", "data": [...], "timestamp": "..."}
+            # 前端期望 {"type": "pool_snapshot", "data": [...]}
+            if pool_data:
+                snapshot = pool_data[0]
+                self._push_sse("pool_snapshot", snapshot.get("data", []))
             for alert in surge_alerts + flow_alerts + limit_alerts:
                 self._push_sse("alert", alert)
             if sector_data:
@@ -701,7 +827,7 @@ class MarketWatcherEngine:
                 "surge": len(surge_alerts),
                 "flow": len(flow_alerts),
             }
-            self._push_sse("stats", {"type": "stats", "data": stats})
+            self._push_sse("stats", stats)
 
             self._poll_count += 1
             if self._poll_count % 10 == 0:
@@ -722,7 +848,8 @@ class MarketWatcherEngine:
         if loop is None or not loop.is_running():
             return
         try:
-            payload = json.dumps(data, ensure_ascii=False, default=str)
+            # 包裹 type 字段，前端通过 msg.type 分发
+            payload = json.dumps({"type": event_type, "data": data}, ensure_ascii=False, default=str)
             asyncio.run_coroutine_threadsafe(self._sse.push(payload), loop)
         except Exception:
             logger.debug(f"SSE推送失败: {event_type}")

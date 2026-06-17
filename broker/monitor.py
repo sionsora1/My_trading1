@@ -544,6 +544,7 @@ class MonitorEngine:
         self._interval: float = 5.0  # 轮询间隔（秒）
         self._max_alerts: int = 500
         self._baseline_days: int = 20
+        self._stock_names: Dict[str, str] = {}  # code → name 映射
 
         # asyncio 事件循环引用（由 set_event_loop 设置，用于跨线程 SSE 推送）
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -629,6 +630,9 @@ class MonitorEngine:
             self._prev_snapshots = {}
             self._total_alerts = 0
 
+            # 加载股票名称映射
+            self._load_stock_names()
+
             self._thread = threading.Thread(
                 target=self._poll_loop,
                 daemon=True,
@@ -690,6 +694,27 @@ class MonitorEngine:
         }
 
     # ------------------------------------------------------------------
+    # 股票名称
+    # ------------------------------------------------------------------
+
+    def _load_stock_names(self) -> None:
+        """从数据库加载股票 code → name 映射。"""
+        try:
+            from data.database import SQLiteManager
+            db = SQLiteManager()
+            rows = db._conn.execute(
+                "SELECT ts_code, name FROM stock_info"
+            ).fetchall()
+            for row in rows:
+                code = row["ts_code"].replace(".SH", "").replace(".SZ", "")
+                if row["name"]:
+                    self._stock_names[code] = row["name"]
+            db.close()
+            logger.debug(f"MonitorEngine 加载了 {len(self._stock_names)} 个股票名称")
+        except Exception as e:
+            logger.error(f"股票名称加载失败: {e}", exc_info=True)
+
+    # ------------------------------------------------------------------
     # 后台轮询循环
     # ------------------------------------------------------------------
 
@@ -716,6 +741,15 @@ class MonitorEngine:
                 continue
 
             self._last_poll_at = datetime.now().isoformat()
+
+            # 注入数据库股票名称（TDX单股查询可能不返回名称）
+            if self._stock_names and curr:
+                curr = {
+                    code: dataclasses.replace(
+                        snap, name=self._stock_names.get(code, snap.name)
+                    )
+                    for code, snap in curr.items()
+                }
 
             if not curr:
                 # 首次轮询或空结果 → 保存快照但不检测

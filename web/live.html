@@ -1287,16 +1287,37 @@
                 container.innerHTML = '<p class="text-dim" style="text-align:center;padding:40px;">-- 等待板块数据 --</p>';
                 return;
             }
-            let html = '<div style="display:flex;gap:16px;"><div style="flex:1"><h4>概念板块</h4>';
-            sectorData.concept.slice(0, 15).forEach(s => {
-                html += `<div style="padding:4px 0;border-bottom:1px solid var(--border)">${s.name}</div>`;
-            });
-            html += '</div><div style="flex:1"><h4>行业板块</h4>';
-            sectorData.industry.slice(0, 15).forEach(s => {
-                html += `<div style="padding:4px 0;border-bottom:1px solid var(--border)">${s.name}</div>`;
-            });
-            html += '</div></div>';
-            container.innerHTML = html;
+            const renderSectorTable = (title, sectors) => {
+                if (!sectors.length) return '';
+                let h = `<h4 style="margin:8px 0 4px">${title}</h4>
+                <table class="data-table"><thead><tr>
+                    <th>板块</th><th>均涨幅</th><th>资金流向</th><th>领涨股</th>
+                </tr></thead><tbody>`;
+                sectors.slice(0, 15).forEach(s => {
+                    const pct = s.change_pct || 0;
+                    const pctColor = pct > 0 ? 'var(--green)' : (pct < 0 ? 'var(--red)' : '');
+                    const flow = s.net_flow || 0;
+                    const flowStr = flow > 0 ? `🟢+${(flow/1e8).toFixed(2)}亿` :
+                                    flow < 0 ? `🔴${(flow/1e8).toFixed(2)}亿` : '--';
+                    const flowColor = flow > 0 ? 'var(--green)' : (flow < 0 ? 'var(--red)' : '');
+                    const leader = s.leading_stock ?
+                        `${s.leading_stock} <span style="color:${(s.leading_pct||0)>=0?'var(--green)':'var(--red)'}">${(s.leading_pct||0)>=0?'+':''}${(s.leading_pct||0).toFixed(1)}%</span>` :
+                        '--';
+                    h += `<tr>
+                        <td><strong>${s.name}</strong></td>
+                        <td style="color:${pctColor}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</td>
+                        <td style="color:${flowColor}">${flowStr}</td>
+                        <td>${leader}</td>
+                    </tr>`;
+                });
+                h += '</tbody></table>';
+                return h;
+            };
+            container.innerHTML =
+                '<div style="display:flex;gap:16px;">' +
+                '<div style="flex:1">' + renderSectorTable('概念板块', sectorData.concept) + '</div>' +
+                '<div style="flex:1">' + renderSectorTable('行业板块', sectorData.industry) + '</div>' +
+                '</div>';
         }
 
         // ========== Init ==========
