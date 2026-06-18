@@ -26,7 +26,6 @@ if _project_root not in sys.path:
 import asyncio
 import dataclasses
 import json
-import logging
 import math
 import random
 import statistics
@@ -39,8 +38,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from config.settings import DATA_SOURCE_CONFIG
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger('live_trading', 'live_trading.log')
 
 # ======================================================================
 # 1. Alert — 告警值对象
@@ -312,12 +312,16 @@ class Detector:
 
     # ── 双重阈值：(delta/median) 比 AND (delta-median)/MAD 比 ──
     # 两个条件都满足才触发，避免单一指标误判
-    SUPER_LARGE_MEDIAN_RATIO = 5.0    # delta 至少是 median 的 5 倍
-    SUPER_LARGE_MAD = 10.0            # 偏离至少 10 倍 MAD
-    LARGE_MEDIAN_RATIO = 3.0          # delta 至少是 median 的 3 倍
-    LARGE_MAD = 6.0                   # 偏离至少 6 倍 MAD
-    SPIKE_MEDIAN_RATIO = 2.0          # delta 至少是 median 的 2 倍
-    SPIKE_MAD = 4.0                   # 偏离至少 4 倍 MAD
+    SUPER_LARGE_MEDIAN_RATIO = 3.0    # delta 至少是 median 的 3 倍
+    SUPER_LARGE_MAD = 5.0             # 偏离至少 5 倍 MAD
+    LARGE_MEDIAN_RATIO = 2.0          # delta 至少是 median 的 2 倍
+    LARGE_MAD = 3.0                   # 偏离至少 3 倍 MAD
+    SPIKE_MEDIAN_RATIO = 1.5          # delta 至少是 median 的 1.5 倍
+    SPIKE_MAD = 2.0                   # 偏离至少 2 倍 MAD
+    COLD_START_SPIKE_RATIO = 2.0      # 冷启动时，5秒成交量至少是历史均值的 2 倍
+    PRICE_SURGE_60S = 1.0             # 1分钟内涨跌幅 ≥ 1% 独立触发
+    ABS_AMOUNT_BACKSTOP = 20_000_000  # 绝对金额兜底：5秒成交额 ≥ 2000万直接触发
+    ABS_AMOUNT_60S = 50_000_000       # 1分钟累计 ≥ 5000万确认大单
 
     # ── 滑窗参数 ──
     WINDOW_SIZE = 12     # 60 秒 / 5 秒间隔
@@ -365,13 +369,15 @@ class Detector:
         """
         window = self._windows.get(code, [])
         if len(window) < self.WINDOW_SIZE:
-            # 冷启动：数据点不足，用历史基线兜底
+            # 冷启动：绝对金额兜底优先
+            if delta_amt >= self.ABS_AMOUNT_BACKSTOP:
+                return ("volume_spike", round(delta_amt / 1_000_000, 1))
+            # 历史成交量基线兜底
             baseline_rate = self._history_baselines.get(code, 0.0)
             if baseline_rate > 0:
-                # 5秒基准量 × 窗口期间 = 5 * baseline_rate
-                expected = baseline_rate * 5 * self.WINDOW_SIZE
-                if expected > 0 and delta_amt > expected * self.MAD_SPIKE:
-                    mad_mul = delta_amt / expected if expected > 0 else 0
+                expected = baseline_rate * 5
+                if expected > 0 and delta_vol > expected * self.COLD_START_SPIKE_RATIO:
+                    mad_mul = delta_vol / expected
                     return ("volume_spike", round(mad_mul, 1))
             return None
 
@@ -395,6 +401,10 @@ class Detector:
         last = self._cooldowns.get(code, 0)
         if now - last < self.COOLDOWN_SEC:
             return None
+
+        # 绝对金额兜底：无论 MAD 如何，只要成交额够大就触发
+        if delta_amt >= self.ABS_AMOUNT_BACKSTOP:
+            return ("volume_spike", round(delta_amt / max(median, 1.0), 1) if median > 0 else 999.0)
 
         # 双重阈值：中位数比 AND MAD倍数 同时达标
         if median_ratio >= self.SUPER_LARGE_MEDIAN_RATIO and mad_multiple >= self.SUPER_LARGE_MAD:
@@ -721,18 +731,57 @@ class MonitorEngine:
 
             self._prev_snapshots = curr
 
+            if not hasattr(self, '_poll_count'):
+                self._poll_count = 0
+            self._poll_count += 1
+            if self._poll_count % 10 == 0:
+                logger.info(f"TDX轮询心跳: 第{self._poll_count}轮, 快照={len(curr)}, deltas={len(deltas)}")
+
             if warmup_rounds > 0:
                 warmup_rounds -= 1
                 time.sleep(self._interval)
                 continue
 
-            # 检测
+            # ── 独立触发：1分钟内价格变动 ≥ 1% ──
+            if not hasattr(self, '_price_history'):
+                self._price_history: Dict[str, list] = {}
+            price_candidates: Dict[str, str] = {}  # code → direction
+            for code, snap in curr.items():
+                if code not in self._price_history:
+                    self._price_history[code] = []
+                ph = self._price_history[code]
+                ph.append((time.time(), snap.price))
+                ph[:] = [(t, p) for t, p in ph if time.time() - t <= 60]
+                if len(ph) >= 4:
+                    p_first = ph[0][1]
+                    p_last = ph[-1][1]
+                    if p_first > 0:
+                        pct = (p_last - p_first) / p_first * 100
+                        if abs(pct) >= self._detector.PRICE_SURGE_60S:
+                            price_candidates[code] = "buy" if pct > 0 else "sell"
+
+            # ── MAD 检测 ──
             candidates: List[Tuple[str, str, float, float, float, float, float]] = []
             for code, (da, dv, db, ds) in deltas.items():
                 result = self._detector.check(code, da, dv, db, ds)
                 if result is not None:
                     level, mad_mul = result
                     candidates.append((code, level, mad_mul, da, dv, db, ds))
+
+                # 价格异动也加入候选（独立于 MAD）
+                if code in price_candidates and code not in [c[0] for c in candidates]:
+                    candidates.append((code, "volume_spike", 0.0, 0, 0, 0, 0))
+
+            # ── 1分钟累计追踪 ──
+            if not hasattr(self, '_minute_amounts'):
+                self._minute_amounts: Dict[str, list] = {}
+            for code in deltas:
+                da = deltas[code][0]
+                if code not in self._minute_amounts:
+                    self._minute_amounts[code] = []
+                w = self._minute_amounts[code]
+                w.append((time.time(), da))
+                w[:] = [(t, a) for t, a in w if time.time() - t <= 60]
 
             # 按 MAD 倍数排序，每轮最多 10 条
             candidates.sort(key=lambda x: x[2], reverse=True)
@@ -742,20 +791,31 @@ class MonitorEngine:
                 if snap is None:
                     continue
 
+                # 双条件 OR 验证（价格异动候选跳过）
+                if mad_mul != 0.0:  # mad_mul=0 是价格异动候选人
+                    total_60s = sum(a for _, a in self._minute_amounts.get(code, []))
+                    # OR 关系：5s >= 2000万 或 1分钟 >= 5000万，任一满足
+                    if da < self._detector.ABS_AMOUNT_BACKSTOP and total_60s < self._detector.ABS_AMOUNT_60S:
+                        continue
+
                 # 交叉验证：查东方财富资金流缓存
                 fund_data = self._fund_poller.get_cached(code)
                 super_large_flow = fund_data.get("super_large_order", 0) if fund_data else 0
                 large_flow = fund_data.get("large_order", 0) if fund_data else 0
 
-                # 方向判定：主动买卖盘占比
+                # 方向判定：主动买卖盘占比 + 价格变动辅助
                 total_active = db + ds
                 if total_active > 0:
                     buy_ratio = db / total_active
                 else:
                     buy_ratio = 0.5
-                if buy_ratio > 0.7:
+                # 价格变动辅助判定
+                p = prev.get(code)
+                price_change = (snap.price - p.price) / p.price * 100 if (p and p.price > 0) else 0
+
+                if buy_ratio > 0.51 or price_change > 0.05:
                     direction = "buy"
-                elif buy_ratio < 0.3:
+                elif buy_ratio < 0.49 or price_change < -0.05:
                     direction = "sell"
                 else:
                     direction = "neutral"

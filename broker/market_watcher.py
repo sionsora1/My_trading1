@@ -654,6 +654,11 @@ class MarketWatcherEngine:
         self._interval: float = 3.0
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         self._poll_count: int = 0
+        self._last_pool_snapshot: List[dict] = []
+        self._recent_alerts: List[dict] = []
+        self._last_sector_data: Dict[str, Any] = {}
+        self._last_stats: Dict[str, Any] = {}
+        self._max_recent_alerts: int = 200
 
         logger.info("MarketWatcher 初始化完成")
 
@@ -664,6 +669,19 @@ class MarketWatcherEngine:
     @property
     def is_running(self) -> bool:
         return self._running.is_set()
+
+    def get_snapshot(self) -> dict:
+        """Return latest watcher data for newly connected clients."""
+        with self._lock:
+            return {
+                "running": self.is_running,
+                "stock_count": len(self._stock_pool),
+                "poll_count": self._poll_count,
+                "pool_snapshot": list(self._last_pool_snapshot),
+                "recent_alerts": list(self._recent_alerts),
+                "sector_heatmap": dict(self._last_sector_data),
+                "stats": dict(self._last_stats),
+            }
 
     # ------------------------------------------------------------------
     # 事件循环
@@ -717,6 +735,10 @@ class MarketWatcherEngine:
 
             self._running.set()
             self._load_stock_names()
+            self._last_pool_snapshot = []
+            self._recent_alerts = []
+            self._last_sector_data = {}
+            self._last_stats = {}
 
             self._thread = threading.Thread(
                 target=self._poll_loop,
@@ -814,10 +836,19 @@ class MarketWatcherEngine:
             # 前端期望 {"type": "pool_snapshot", "data": [...]}
             if pool_data:
                 snapshot = pool_data[0]
-                self._push_sse("pool_snapshot", snapshot.get("data", []))
+                snapshot_data = snapshot.get("data", [])
+                with self._lock:
+                    self._last_pool_snapshot = list(snapshot_data)
+                self._push_sse("pool_snapshot", snapshot_data)
             for alert in surge_alerts + flow_alerts + limit_alerts:
+                with self._lock:
+                    self._recent_alerts.append(alert)
+                    if len(self._recent_alerts) > self._max_recent_alerts:
+                        self._recent_alerts = self._recent_alerts[-self._max_recent_alerts:]
                 self._push_sse("alert", alert)
             if sector_data:
+                with self._lock:
+                    self._last_sector_data = dict(sector_data)
                 self._push_sse("sector_heatmap", sector_data)
 
             # 统计心跳
@@ -827,6 +858,8 @@ class MarketWatcherEngine:
                 "surge": len(surge_alerts),
                 "flow": len(flow_alerts),
             }
+            with self._lock:
+                self._last_stats = dict(stats)
             self._push_sse("stats", stats)
 
             self._poll_count += 1
