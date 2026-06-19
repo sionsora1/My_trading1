@@ -220,3 +220,66 @@ DATA_SOURCE_CONFIG = {
         'connect_timeout': 5,
     },
 }
+
+# ============================================================
+# 异动检测配置 (6 模块)
+# ============================================================
+
+ANOMALY_DETECTOR_CONFIG = {
+    # ── 逐笔大单 ──
+    'trans_big': {
+        'interval_sec': 3,             # 独立线程轮询间隔
+        'abs_threshold': 20_000_000,   # 绝对下限 (2000万)
+        'dynamic_multiple': 30,        # 日均笔额 × N
+        'lookback_days': 30,           # 历史基线天数
+        'super_large_multiple': 3,     # 特大单倍率
+        'super_large_abs': 50_000_000, # 特大单绝对下限 (5000万)
+        'giant_abs': 100_000_000,      # 巨单绝对下限 (1亿)
+        'auction_days': 5,             # 集合竞价对比天数
+        'auction_multiple': 3,         # 竞价异常倍率
+        'pre_filter_mad': 3,           # 预筛选 MAD 倍率
+    },
+    # ── 盘口异动 ──
+    'orderbook': {
+        'cooldown_sec': 30,            # 冷却时间
+        'window_size': 12,             # 60秒 / 5秒 = 12拍
+        'bid_change_multiple': 10,     # 挂单突变倍率
+        'bid_change_min_hands': 2000,  # 挂单突变最小于数
+        'imbalance_severe_low': 0.2,   # 严重失衡下限
+        'imbalance_severe_high': 5,    # 严重失衡上限
+        'imbalance_min_hands': 5000,   # 失衡最小于数
+        'cancel_disappear_hands': 200, # 撤单消失线程
+        'spread_pct_threshold': 0.5,   # 价差异动阈值 %
+        'spread_mean_multiple': 5,     # 价差异动均值倍率
+    },
+    # ── 内外盘背离 ──
+    'divergence': {
+        'cooldown_sec': 30,            # 冷却时间
+        'window_size': 5,              # 5拍窗口
+        'imbalance_ratio': 1.5,        # 内外盘不均衡比
+        'extreme_ratio': 3.0,          # 极端背离比
+        'extreme_duration': 3,         # 极端持续拍数
+    },
+    # ── 换手率异动 ──
+    'turnover': {
+        'lookback_days': 30,           # 历史中位数天数
+        'five_min_multiple': 5,        # 5分钟增量倍率
+        'daily_hot_multiple': 3,       # 全天放量倍率
+        'daily_extreme_multiple': 5,   # 全天极端倍率
+    },
+    # ── 涨跌停加速 ──
+    'limit_move': {
+        'near_limit_pct': 9.5,         # 逼近涨跌停 %
+        'approach_pct': 8.0,           # 接近涨跌停 %
+        'seal_loosen_vol_ratio': 0.5,  # 封单松动比
+        'pry_signal_vol_ratio': 10,    # 撬板信号挂量比
+        'approach_price_change': 3.0,  # 逼近加速价格变化 %
+        'approach_turnover_multiple': 3, # 逼近加速换手倍率
+    },
+    # ── 排名突变 ──
+    'rank_change': {
+        'rank_jump': 30,               # 排名跃升位数
+        'pct_jump_from': 2.0,          # 涨幅突变起点 %
+        'pct_jump_to': 5.0,            # 涨幅突变终点 %
+    },
+}

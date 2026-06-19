@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>大单监控 - 示范页面</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --card: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --red: #ff6b6b;
+  --green: #3fb950;
+  --yellow: #d2991d;
+  --blue: #58a6ff;
+  --purple: #bc8cff;
+  --orange: #f0883e;
+  --teal: #39d353;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Microsoft YaHei', sans-serif;
+  padding: 24px;
+}
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 6px; padding: 16px; margin-bottom: 16px;
+}
+.header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+}
+.header .title { font-weight: 600; font-size: 15px; }
+.header .badge {
+  font-size: 12px; color: var(--green);
+  background: rgba(63,185,80,0.1); padding: 2px 8px; border-radius: 10px;
+}
+.btn-group { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn {
+  padding: 5px 14px; border: 1px solid var(--border); border-radius: 4px;
+  background: transparent; color: var(--text-dim); cursor: pointer;
+  font-size: 12px; transition: all 0.15s;
+}
+.btn:hover { border-color: var(--blue); color: var(--text); }
+.btn.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.btn.ghost { color: var(--red); border-color: rgba(255,107,107,0.3); }
+.btn.ghost:hover { background: rgba(255,107,107,0.1); }
+
+.alert-list { max-height: 550px; overflow-y: auto; }
+.alert-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.alert-row:hover { background: rgba(88,166,255,0.03); }
+.alert-icon { font-size: 20px; flex-shrink: 0; margin-top: 2px; }
+.alert-body { flex: 1; min-width: 0; }
+.alert-line1 { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.alert-code { font-weight: 600; font-size: 13px; }
+.alert-name { color: var(--text-dim); font-size: 12px; }
+.alert-tag {
+  font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 500;
+  white-space: nowrap;
+}
+.tag-big       { background: rgba(207,34,46,0.15); color: #ff4444; }  /* 原有超大单 */
+.tag-large     { background: rgba(210,153,29,0.15); color: var(--yellow); }
+.tag-spike     { background: rgba(139,148,158,0.15); color: #c0c0c0; }
+.tag-trans     { background: rgba(188,140,255,0.15); color: var(--purple); }
+.tag-orderbook { background: rgba(240,136,62,0.15); color: var(--orange); }
+.tag-diverge   { background: rgba(57,211,83,0.15); color: var(--teal); }
+.tag-turnover  { background: rgba(88,166,255,0.15); color: var(--blue); }
+.tag-limit     { background: rgba(255,107,107,0.15); color: var(--red); }
+.tag-auction   { background: rgba(139,148,158,0.15); color: #a0a0a0; }
+.tag-rank      { background: rgba(88,166,255,0.15); color: var(--blue); }
+
+.alert-line2 { font-size: 12px; color: var(--text); margin-bottom: 2px; }
+.alert-line3 {
+  font-size: 11px; color: var(--text-dim);
+  display: flex; align-items: center; gap: 10px;
+}
+.alert-line3 .dir-buy  { color: var(--green); }
+.alert-line3 .dir-sell { color: var(--red); }
+.alert-line3 .dir-neutral { color: var(--yellow); }
+.alert-time { font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+.stats { display: flex; gap: 20px; margin-bottom: 12px; font-size: 12px; }
+.stat { text-align: center; }
+.stat-value { font-size: 20px; font-weight: 600; }
+.stat-label { color: var(--text-dim); font-size: 11px; }
+.empty { text-align: center; padding: 60px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <!-- Header -->
+  <div class="header">
+    <span class="title">📡 大单监控</span>
+    <span class="badge">● 运行中</span>
+    <span style="font-size:12px;color:var(--text-dim);">
+      扫描 81 只 | 间隔 5s | 告警 <strong style="color:var(--yellow);">6</strong> 条
+    </span>
+    <span style="margin-left:auto;font-size:11px;color:var(--text-dim);">
+      最后: 14:32:35
+    </span>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-value" style="color:var(--purple);">1</div>
+      <div class="stat-label">逐笔大单</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" style="color:var(--orange);">1</div>
+      <div class="stat-label">盘口异动</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" style="color:var(--teal);">1</div>
+      <div class="stat-label">内外盘背离</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" style="color:var(--blue);">1</div>
+      <div class="stat-label">换手率</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" style="color:var(--red);">1</div>
+      <div class="stat-label">涨跌停</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" style="color:var(--yellow);">1</div>
+      <div class="stat-label">竞价异常</div>
+    </div>
+  </div>
+
+  <!-- Filter Buttons -->
+  <div class="btn-group" style="margin-bottom: 14px;">
+    <button class="btn active" onclick="filterAll()" id="btnAll">全部</button>
+    <button class="btn" onclick="filterType('trans_big')" id="btnTrans">🟣 逐笔大单</button>
+    <button class="btn" onclick="filterType('orderbook')" id="btnOB">🟠 盘口异动</button>
+    <button class="btn" onclick="filterType('divergence')" id="btnDiv">🟢 内外盘背离</button>
+    <button class="btn" onclick="filterType('turnover')" id="btnTO">🔵 换手率</button>
+    <button class="btn" onclick="filterType('limit_move')" id="btnLM">🔴 涨跌停</button>
+    <button class="btn" onclick="filterType('auction')" id="btnAuc">⚪ 竞价</button>
+    <button class="btn ghost" onclick="clearAll()" style="margin-left:auto;">🗑 清空</button>
+  </div>
+
+  <!-- Alert List -->
+  <div class="alert-list" id="alertList"></div>
+</div>
+
+<script>
+// ── Mock 告警数据 ──
+const mockAlerts = [
+  {
+    id: 1, type: 'trans_big', level: 'super_large', direction: 'buy',
+    code: '300750', name: '宁德时代', price: 391.50, time: '14:32:18',
+    desc: '单笔 3,200万 / 80手  买入',
+    detail: '阈值2000万 ×1.6',
+    ext: '均价 391.50'
+  },
+  {
+    id: 2, type: 'orderbook', level: 'imbalance_severe', direction: 'neutral',
+    code: '002415', name: '海康威视', price: 35.60, time: '14:32:20',
+    desc: '卖盘:买盘 = 6.2:1  卖盘 1.2万手 / 买盘 1,900手',
+    detail: '盘口严重失衡',
+    ext: ''
+  },
+  {
+    id: 3, type: 'divergence', level: 'price_up_sell_more', direction: 'sell',
+    code: '603083', name: '剑桥科技', price: 45.20, time: '14:32:22',
+    desc: '价涨 +0.8% 但内盘 >> 外盘',
+    detail: '买盘 8,400 / 卖盘 22,000  |  比值 2.62:1  |  持续 15秒',
+    ext: ''
+  },
+  {
+    id: 4, type: 'turnover', level: 'extreme', direction: 'neutral',
+    code: '603629', name: '利通电子', price: 18.60, time: '14:32:25',
+    desc: '全天换手 28.5%  (历史中位数 13.0%)',
+    detail: '5分钟增量 +3.8%  |  超中位数 ×5.6',
+    ext: ''
+  },
+  {
+    id: 5, type: 'limit_move', level: 'seal_loosen', direction: 'sell',
+    code: '002156', name: '通富微电', price: 22.40, time: '14:32:30',
+    desc: '涨停封单骤降  买1 1,200手 → 前5分钟中位数 35,000手',
+    detail: '封单减少 96.6%  |  涨跌幅 +9.8%  |  警惕开板',
+    ext: ''
+  },
+  {
+    id: 6, type: 'auction', level: 'spike', direction: 'neutral',
+    code: '300136', name: '信维通信', price: 38.20, time: '09:25:00',
+    desc: '集合竞价放量 5,800万',
+    detail: '近5日均值 1,200万  |  超均值 ×4.8  |  较昨日竞价 +380%',
+    ext: ''
+  },
+];
+
+// ── 类型配置 ──
+const typeConfig = {
+  'trans_big':   { icon: '🟣', tagClass: 'tag-trans',     tagLabel: '逐笔大单' },
+  'orderbook':   { icon: '🟠', tagClass: 'tag-orderbook', tagLabel: '盘口异动' },
+  'divergence':  { icon: '🟢', tagClass: 'tag-diverge',   tagLabel: '内外盘背离' },
+  'turnover':    { icon: '🔵', tagClass: 'tag-turnover',  tagLabel: '换手率异动' },
+  'limit_move':  { icon: '🔴', tagClass: 'tag-limit',     tagLabel: '涨跌停加速' },
+  'auction':     { icon: '⚪', tagClass: 'tag-auction',   tagLabel: '竞价异常' },
+  'rank':        { icon: '🔵', tagClass: 'tag-rank',      tagLabel: '排名突变' },
+};
+
+function dirInfo(direction) {
+  if (direction === 'buy')     return { cls: 'dir-buy',  label: '买入' };
+  if (direction === 'sell')    return { cls: 'dir-sell', label: '卖出' };
+  return { cls: 'dir-neutral', label: '中性' };
+}
+
+let currentFilter = 'all';
+let alerts = [...mockAlerts];
+
+function render() {
+  const container = document.getElementById('alertList');
+  const filtered = currentFilter === 'all'
+    ? alerts
+    : alerts.filter(a => a.type === currentFilter);
+
+  if (!filtered.length) {
+    container.innerHTML = '<div class="empty">-- 暂无此类告警 --</div>';
+    return;
+  }
+
+  container.innerHTML = filtered.map(a => {
+    const cfg = typeConfig[a.type] || { icon: '📊', tagClass: '', tagLabel: a.type };
+    const dir = dirInfo(a.direction);
+
+    return `
+      <div class="alert-row">
+        <div class="alert-icon">${cfg.icon}</div>
+        <div class="alert-body">
+          <div class="alert-line1">
+            <span class="alert-code">${a.code}</span>
+            <span class="alert-name">${a.name}</span>
+            <span class="alert-tag ${cfg.tagClass}">${cfg.tagLabel}</span>
+            ${a.level === 'super_large' ? '<span class="alert-tag tag-big">特大单</span>' : ''}
+            ${a.level === 'extreme' ? '<span class="alert-tag tag-big">极端</span>' : ''}
+            ${a.level === 'seal_loosen' ? '<span class="alert-tag tag-big">⚠ 封板松动</span>' : ''}
+          </div>
+          <div class="alert-line2">${a.desc}</div>
+          <div class="alert-line3">
+            <span>价: ${a.price.toFixed(2)}</span>
+            <span>${a.detail}</span>
+            <span class="${dir.cls}">${dir.label}</span>
+          </div>
+        </div>
+        <div class="alert-time">${a.time}</div>
+      </div>`;
+  }).join('');
+}
+
+function filterAll() {
+  currentFilter = 'all';
+  document.querySelectorAll('.btn-group .btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('btnAll').classList.add('active');
+  render();
+}
+
+function filterType(type) {
+  currentFilter = type;
+  document.querySelectorAll('.btn-group .btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('btn' + type.charAt(0).toUpperCase() + type.slice(1).replace('_', '')
+    .replace('trans_big', 'Trans')
+    .replace('orderbook', 'OB')
+    .replace('divergence', 'Div')
+    .replace('turnover', 'TO')
+    .replace('limit_move', 'LM')
+    .replace('auction', 'Auc')
+  )?.classList?.add('active');
+  // 更稳健的做法
+  const map = { trans_big: 'btnTrans', orderbook: 'btnOB', divergence: 'btnDiv',
+                turnover: 'btnTO', limit_move: 'btnLM', auction: 'btnAuc' };
+  Object.values(map).forEach(id => { const el = document.getElementById(id); if(el) el.classList.remove('active'); });
+  const target = document.getElementById(map[type]);
+  if (target) target.classList.add('active');
+  render();
+}
+
+// 修正筛选按钮的事件绑定
+document.getElementById('btnTrans').onclick = () => filterType('trans_big');
+document.getElementById('btnOB').onclick = () => filterType('orderbook');
+document.getElementById('btnDiv').onclick = () => filterType('divergence');
+document.getElementById('btnTO').onclick = () => filterType('turnover');
+document.getElementById('btnLM').onclick = () => filterType('limit_move');
+document.getElementById('btnAuc').onclick = () => filterType('auction');
+
+function clearAll() {
+  alerts = [];
+  document.getElementById('alertList').innerHTML = '<div class="empty">-- 暂无大单告警 --</div>';
+}
+
+render();
+</script>
+
+</body>
+</html>

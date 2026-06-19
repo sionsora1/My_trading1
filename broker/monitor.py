@@ -89,8 +89,27 @@ class QuoteSnapshot:
     volume: float       # 累计成交量（股）
     amount: float       # 累计成交额（元）
     change_pct: float   # 涨跌幅 %（相对昨收）
+    last_close: float   # 昨收
     bid1: float         # 买一价
+    bid2: float         # 买二价
+    bid3: float         # 买三价
+    bid4: float         # 买四价
+    bid5: float         # 买五价
     ask1: float         # 卖一价
+    ask2: float         # 卖二价
+    ask3: float         # 卖三价
+    ask4: float         # 卖四价
+    ask5: float         # 卖五价
+    bid_vol1: float     # 买一挂量（手）
+    bid_vol2: float     # 买二挂量
+    bid_vol3: float     # 买三挂量
+    bid_vol4: float     # 买四挂量
+    bid_vol5: float     # 买五挂量
+    ask_vol1: float     # 卖一挂量（手）
+    ask_vol2: float     # 卖二挂量
+    ask_vol3: float     # 卖三挂量
+    ask_vol4: float     # 卖四挂量
+    ask_vol5: float     # 卖五挂量
     active_buy: float   # 外盘（主动买）
     active_sell: float  # 内盘（主动卖）
     time: str           # 数据时间 '14:32:15'
@@ -174,8 +193,27 @@ class TDXQuotesPoller:
                     volume=float(q.get("vol", 0) or 0),
                     amount=float(q.get("amount", 0) or 0),
                     change_pct=change_pct,
+                    last_close=float(q.get("last_close", 0) or 0),
                     bid1=float(q.get("bid1", 0) or 0),
+                    bid2=float(q.get("bid2", 0) or 0),
+                    bid3=float(q.get("bid3", 0) or 0),
+                    bid4=float(q.get("bid4", 0) or 0),
+                    bid5=float(q.get("bid5", 0) or 0),
                     ask1=float(q.get("ask1", 0) or 0),
+                    ask2=float(q.get("ask2", 0) or 0),
+                    ask3=float(q.get("ask3", 0) or 0),
+                    ask4=float(q.get("ask4", 0) or 0),
+                    ask5=float(q.get("ask5", 0) or 0),
+                    bid_vol1=float(q.get("bid_vol1", 0) or 0),
+                    bid_vol2=float(q.get("bid_vol2", 0) or 0),
+                    bid_vol3=float(q.get("bid_vol3", 0) or 0),
+                    bid_vol4=float(q.get("bid_vol4", 0) or 0),
+                    bid_vol5=float(q.get("bid_vol5", 0) or 0),
+                    ask_vol1=float(q.get("ask_vol1", 0) or 0),
+                    ask_vol2=float(q.get("ask_vol2", 0) or 0),
+                    ask_vol3=float(q.get("ask_vol3", 0) or 0),
+                    ask_vol4=float(q.get("ask_vol4", 0) or 0),
+                    ask_vol5=float(q.get("ask_vol5", 0) or 0),
                     active_buy=float(q.get("active1", 0) or 0),
                     active_sell=float(q.get("active2", 0) or 0),
                     time=now_str,
@@ -542,6 +580,23 @@ class MonitorEngine:
         self._detector = Detector()
         self._sse = SSEManager()
 
+        # ── 新增: 异动检测器 ──
+        from broker.detector import SimpleQueue, AnomalyAlert  # noqa: F811
+        from broker.detector.divergence import DivergenceDetector
+        from broker.detector.orderbook import OrderbookDetector
+        from broker.detector.limit_move import LimitMoveDetector
+        from broker.detector.turnover import TurnoverDetector
+        from broker.detector.trans_big import TransBigDetector
+
+        self._trans_queue = SimpleQueue()
+        self._divergence_detector = DivergenceDetector()
+        self._orderbook_detector = OrderbookDetector()
+        self._limit_move_detector = LimitMoveDetector()
+        self._turnover_detector = TurnoverDetector()
+        self._trans_big_detector: Optional[TransBigDetector] = None
+        # 排名突变
+        self._rank_cache: Dict[str, int] = {}
+
         self._thread: Optional[threading.Thread] = None
         self._fund_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
@@ -606,6 +661,156 @@ class MonitorEngine:
             logger.error(f"股票名称加载失败: {e}")
 
     # ------------------------------------------------------------------
+    # 异动检测器缓存
+    # ------------------------------------------------------------------
+
+    def _load_detector_caches(self) -> None:
+        """加载异动检测器所需的换手率/逐笔/涨跌停缓存数据。"""
+        try:
+            liutong = self._load_liutongguben()
+            turnover_medians = self._compute_turnover_medians()
+            self._turnover_detector.set_liutong_cache(liutong)
+            self._turnover_detector.set_hist_medians(turnover_medians)
+            logger.info(f"换手率缓存: {len(liutong)} 流通股本, {len(turnover_medians)} 历史中位数")
+        except Exception as e:
+            logger.error(f"换手率缓存加载失败: {e}")
+
+        try:
+            # 涨跌停价格需要一次 poll 获取 last_close
+            # 这里先设一个空壳，_poll_loop 第一轮后自动填入
+            pass
+        except Exception as e:
+            logger.error(f"涨跌停价格加载失败: {e}")
+
+    def _load_liutongguben(self) -> Dict[str, float]:
+        """从 finance_detail 表加载流通股本 (float_shares)。"""
+        try:
+            from data.database import SQLiteManager
+            db = SQLiteManager()
+            cache: Dict[str, float] = {}
+            for code in self._stock_pool:
+                ts_code = f"{code}.SH" if code.startswith(('6', '9')) else f"{code}.SZ"
+                row = db._conn.execute(
+                    "SELECT float_shares FROM finance_detail WHERE ts_code=? ORDER BY report_date DESC LIMIT 1",
+                    (ts_code,),
+                ).fetchone()
+                if row and row['float_shares'] and row['float_shares'] > 0:
+                    cache[code] = float(row['float_shares'])
+            db.close()
+            logger.info(f"流通股本缓存: {len(cache)}/{len(self._stock_pool)} 只")
+            return cache
+        except Exception as e:
+            logger.warning(f"流通股本加载失败 (finance_detail 可能为空): {e}")
+            return {}
+
+    def _compute_turnover_medians(self) -> Dict[str, dict]:
+        """从 daily_bars 计算近30日每只股票的日均换手率中位数和5分钟中位数。"""
+        try:
+            import statistics
+            from data.database import SQLiteManager
+            db = SQLiteManager()
+            medians: Dict[str, dict] = {}
+            for code in self._stock_pool:
+                ts_code = f"{code}.SH" if code.startswith(('6', '9')) else f"{code}.SZ"
+                rows = db._conn.execute(
+                    "SELECT volume FROM daily_bars WHERE ts_code=? ORDER BY trade_date DESC LIMIT 30",
+                    (ts_code,),
+                ).fetchall()
+                vols = [r['volume'] for r in rows if r['volume'] and r['volume'] > 0]
+                if len(vols) >= 5:
+                    daily_median = statistics.median(vols)
+                    # 5分钟中位数 = 日均 / 48 (48个5分钟/交易日)
+                    five_min_median = daily_median / 48.0
+                    medians[code] = {
+                        'daily': daily_median,
+                        '5min': five_min_median,
+                    }
+            db.close()
+            logger.info(f"换手率历史中位数: {len(medians)}/{len(self._stock_pool)} 只")
+            return medians
+        except Exception as e:
+            logger.warning(f"换手率中位数计算失败: {e}")
+            return {}
+
+    def _load_limit_prices(self, curr: Dict[str, 'QuoteSnapshot']) -> None:
+        """从当前快照计算涨跌停价格并注入 limit_move 检测器。
+
+        只在第一次调用时执行（_limit_prices_loaded 标记）。
+        """
+        if hasattr(self, '_limit_prices_loaded') and self._limit_prices_loaded:
+            return
+        self._limit_move_detector.set_limit_prices(self._stock_pool, curr)
+        self._limit_prices_loaded = True
+        logger.info("涨跌停价格缓存完成")
+
+    # ------------------------------------------------------------------
+    # 排名突变检测
+    # ------------------------------------------------------------------
+
+    def _check_rank_change(self, curr: Dict[str, 'QuoteSnapshot']) -> List['AnomalyAlert']:
+        """检测自选池内涨跌幅排名突变。
+
+        触发条件:
+          - 排名跃升 > 30 位 (81只中)
+          - 涨幅从 <2% 突变为 >5%
+        """
+        from config.settings import ANOMALY_DETECTOR_CONFIG
+        cfg = ANOMALY_DETECTOR_CONFIG.get('rank_change', {})
+        rank_jump = cfg.get('rank_jump', 30)
+        pct_from = cfg.get('pct_jump_from', 2.0)
+        pct_to = cfg.get('pct_jump_to', 5.0)
+
+        alerts: List[AnomalyAlert] = []
+
+        # 按涨跌幅排序得到当前排名
+        sorted_curr = sorted(curr.items(), key=lambda x: x[1].change_pct, reverse=True)
+        curr_rank = {code: i + 1 for i, (code, _) in enumerate(sorted_curr)}
+
+        # 首次调用只缓存排名，不检测
+        if not self._rank_cache:
+            self._rank_cache = curr_rank
+            return []
+
+        now_str = datetime.now().strftime('%H:%M:%S')
+
+        for code in curr:
+            snap = curr[code]
+            prev_rank = self._rank_cache.get(code, 999)
+            cur_rank_val = curr_rank.get(code, 999)
+            jump = prev_rank - cur_rank_val
+
+            if jump >= rank_jump:
+                alerts.append(AnomalyAlert(
+                    type='rank_change', subtype='rank_surge',
+                    code=code, name=snap.name, direction='neutral', time=now_str,
+                    data={
+                        'rank_before': prev_rank, 'rank_after': cur_rank_val,
+                        'jump': jump, 'change_pct': round(snap.change_pct, 2),
+                    },
+                ))
+
+            # 涨幅突变
+            if snap.change_pct > pct_to:
+                # 检查是否从低涨幅跳上来 (需要历史记录)
+                had_low = any(
+                    prev_snap.change_pct < pct_from
+                    for prev_snap in [self._prev_snapshots.get(code)]
+                    if prev_snap is not None and prev_snap.change_pct < pct_from
+                )
+                if had_low:
+                    alerts.append(AnomalyAlert(
+                        type='rank_change', subtype='pct_jump',
+                        code=code, name=snap.name, direction='neutral', time=now_str,
+                        data={
+                            'change_pct': round(snap.change_pct, 2),
+                            'price': snap.price,
+                        },
+                    ))
+
+        self._rank_cache = curr_rank
+        return alerts
+
+    # ------------------------------------------------------------------
     # 启停
     # ------------------------------------------------------------------
 
@@ -625,6 +830,19 @@ class MonitorEngine:
             self._total_alerts = 0
             self._load_stock_names()
 
+            # ── 新增: 加载检测器缓存 ──
+            try:
+                self._load_detector_caches()
+            except Exception as e:
+                logger.error(f"检测器缓存加载失败: {e}")
+
+            # ── 新增: 启动逐笔大单线程 ──
+            from broker.detector.trans_big import TransBigDetector
+            self._trans_big_detector = TransBigDetector(
+                queue=self._trans_queue, stock_pool=self._stock_pool,
+            )
+            self._trans_big_detector.start()
+
             # 启动 TDX 轮询线程
             self._thread = threading.Thread(
                 target=self._poll_loop, daemon=True, name="monitor-tdx",
@@ -637,7 +855,7 @@ class MonitorEngine:
             )
             self._fund_thread.start()
 
-            logger.info(f"MonitorEngine 已启动: {len(self._stock_pool)} 只股票 (双通道)")
+            logger.info(f"MonitorEngine 已启动: {len(self._stock_pool)} 只股票 (双通道 + 6异动检测器)")
             return {"status": "started", "stock_count": len(self._stock_pool)}
 
     def stop(self) -> Dict[str, Any]:
@@ -645,6 +863,10 @@ class MonitorEngine:
             if not self._running.is_set():
                 return {"status": "not_running"}
             self._running.clear()
+
+        # 停止逐笔大单线程
+        if self._trans_big_detector:
+            self._trans_big_detector.stop()
 
         for t in (self._thread, self._fund_thread):
             if t is not None and t.is_alive():
@@ -730,6 +952,11 @@ class MonitorEngine:
                 self._detector.feed(code, da, dv, db, ds)
 
             self._prev_snapshots = curr
+
+            # ── 新增: 更新逐笔检测器快照 + 涨跌停价格 ──
+            if self._trans_big_detector and prev:
+                self._trans_big_detector.update_snapshots(curr, prev)
+            self._load_limit_prices(curr)
 
             if not hasattr(self, '_poll_count'):
                 self._poll_count = 0
@@ -862,6 +1089,51 @@ class MonitorEngine:
                         for a in alerts_this_cycle[:5]
                     )
                     + ("..." if len(alerts_this_cycle) > 5 else "")
+                )
+
+            # ── 新增: 异动检测器 ──
+            anomaly_alerts: List['AnomalyAlert'] = []
+            try:
+                anomaly_alerts += self._divergence_detector.check(curr, prev)
+            except Exception as e:
+                logger.error(f"内外盘背离检测异常: {e}", exc_info=True)
+            try:
+                anomaly_alerts += self._orderbook_detector.check(curr)
+            except Exception as e:
+                logger.error(f"盘口异动检测异常: {e}", exc_info=True)
+            try:
+                anomaly_alerts += self._limit_move_detector.check(curr)
+            except Exception as e:
+                logger.error(f"涨跌停加速检测异常: {e}", exc_info=True)
+            try:
+                anomaly_alerts += self._turnover_detector.check(curr)
+            except Exception as e:
+                logger.error(f"换手率异动检测异常: {e}", exc_info=True)
+            try:
+                anomaly_alerts += self._check_rank_change(curr)
+            except Exception as e:
+                logger.error(f"排名突变检测异常: {e}", exc_info=True)
+            try:
+                anomaly_alerts += self._trans_queue.get_all_nonblocking()
+            except Exception as e:
+                logger.error(f"逐笔大单告警获取异常: {e}", exc_info=True)
+
+            # 推送异常告警
+            loop = self._event_loop
+            if loop is not None and loop.is_running():
+                for a in anomaly_alerts:
+                    with self._lock:
+                        self._total_alerts += 1
+                    asyncio.run_coroutine_threadsafe(self._sse.push(a), loop)
+
+            if anomaly_alerts:
+                logger.info(
+                    f"检测到 {len(anomaly_alerts)} 条异动告警: "
+                    + ", ".join(
+                        f"{a.name}({a.code}) [{a.type}/{a.subtype}]"
+                        for a in anomaly_alerts[:5]
+                    )
+                    + ("..." if len(anomaly_alerts) > 5 else "")
                 )
 
             time.sleep(self._interval)

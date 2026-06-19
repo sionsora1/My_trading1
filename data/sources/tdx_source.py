@@ -10,6 +10,25 @@ from utils.logger import get_logger
 
 logger = get_logger('data', 'data.log')
 
+# 股票名称本地缓存（避免实时行情时反复查库）
+_name_cache: Dict[str, str] = {}
+
+def _load_name_cache():
+    """从本地数据库加载股票名称到内存缓存"""
+    global _name_cache
+    if _name_cache:
+        return
+    try:
+        from data.database import SQLiteManager
+        db = SQLiteManager()
+        cur = db._conn.execute('SELECT ts_code, name FROM stock_info')
+        for row in cur.fetchall():
+            code = row['ts_code'].replace('.SH', '').replace('.SZ', '')
+            _name_cache[code] = row['name']
+        db.close()
+    except Exception:
+        pass
+
 # TDX 行情服务器地址列表（含备用）
 TDX_SERVERS: List[tuple] = [
     ('60.191.117.167', 7709),
@@ -79,6 +98,21 @@ class TDXDataSource(BaseDataSource):
         self._connected = False
 
     @staticmethod
+    def _safe_decode(text: str) -> str:
+        """修复 pytdx 返回的 GBK 编码字符串被 Latin-1 误解的问题。
+
+        pytdx 底层用 GBK 解码 TDX 服务器返回的字节，但在某些环境下
+        Python 将其解释为 Latin-1，导致中文变成乱码。
+        此方法将乱码字符串恢复为正确的 Unicode。
+        """
+        if not isinstance(text, str) or not text:
+            return text
+        try:
+            return text.encode('latin-1').decode('gbk')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return text
+
+    @staticmethod
     def _parse_code(ts_code: str) -> tuple:
         """解析股票代码 → (market, code)
 
@@ -95,6 +129,45 @@ class TDXDataSource(BaseDataSource):
     # ============================================================
     # 股票列表
     # ============================================================
+
+    def get_stock_info(self, symbol: str) -> dict:
+        """获取单只股票基本信息（名称/行业等）
+
+        通过 get_security_list 分页查找目标股票，
+        并对名称做 _safe_decode 修复 GBK 编码。
+        """
+        if not self._connect():
+            return {}
+
+        symbol = str(symbol).strip()
+        market = 1 if symbol.startswith('6') else 0
+
+        start = 0
+        while True:
+            try:
+                result = self._api.get_security_list(market, start)
+                if not result:
+                    break
+                for item in result:
+                    if str(item.get('code', '')) == symbol:
+                        self._disconnect()
+                        return {
+                            'name': self._safe_decode(item.get('name', symbol)),
+                            'industry': '未知',
+                            'market_cap': 0,
+                            'circ_market_cap': 0,
+                            'pe': 0,
+                            'pb': 0,
+                        }
+                if len(result) < 1000:
+                    break
+                start += 1000
+            except Exception as e:
+                logger.warning(f'TDX股票信息查找失败 {symbol}: {e}')
+                break
+
+        self._disconnect()
+        return {}
 
     def get_stock_list(self) -> pd.DataFrame:
         """获取A股股票列表（沪深两市，过滤ST/退市/科创/北交）"""
@@ -138,6 +211,8 @@ class TDXDataSource(BaseDataSource):
         # 过滤科创板和北交所
         df = df[~df['symbol'].str.startswith(('688', '8', '4'))]
 
+        # 修复 GBK 编码乱码
+        df['name'] = df['name'].apply(self._safe_decode)
         df['industry'] = '未知'
         df['area'] = '中国'
         df['market'] = 'A股'
@@ -228,6 +303,7 @@ class TDXDataSource(BaseDataSource):
         if not self._connect():
             return {}
 
+        _load_name_cache()
         results = {}
         for ts_code in codes:
             market, code = self._parse_code(ts_code)
@@ -244,9 +320,14 @@ class TDXDataSource(BaseDataSource):
                 # bid_vol1-5=买1-5量, ask_vol1-5=卖1-5量
                 # active1=外盘, active2=内盘
                 clean_code = code
+                name = q.get('name', '')
+                if not name:
+                    name = _name_cache.get(clean_code, clean_code)
+                else:
+                    name = self._safe_decode(name)
                 results[clean_code] = {
                     'ts_code': clean_code,
-                    'name': q.get('name', ''),
+                    'name': name,
                     'close': float(q.get('price', 0) or 0),
                     'open': float(q.get('open', 0) or 0),
                     'high': float(q.get('high', 0) or 0),

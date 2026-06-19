@@ -91,7 +91,7 @@ def get_minute_bars(
     # 格式化日期: YYYYMMDD → YYYY-MM-DD
     date_fmt = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
 
-    bars = db.get_minute_bars_by_date(ts_code, date, period)
+    bars = db.get_minute_bars_by_date(ts_code, date_fmt, period)
     db.close()
 
     if not bars:

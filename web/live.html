@@ -435,6 +435,12 @@
                         <button class="btn btn-sm" id="btnFilterBuy" onclick="filterAlerts('buy')">🟢 仅买入</button>
                         <button class="btn btn-sm" id="btnFilterSell" onclick="filterAlerts('sell')">🔴 仅卖出</button>
                         <button class="btn btn-sm" id="btnFilterNeutral" onclick="filterAlerts('neutral')">🟡 中性</button>
+                        <span style="margin:0 4px;color:var(--text-dim);">|</span>
+                        <button class="btn btn-sm" id="btnFilterTrans" onclick="filterAlerts('trans_big')">🟣 逐笔</button>
+                        <button class="btn btn-sm" id="btnFilterOB" onclick="filterAlerts('orderbook')">🟠 盘口</button>
+                        <button class="btn btn-sm" id="btnFilterDiv" onclick="filterAlerts('divergence')">🟢 背离</button>
+                        <button class="btn btn-sm" id="btnFilterTO" onclick="filterAlerts('turnover')">🔵 换手</button>
+                        <button class="btn btn-sm" id="btnFilterLM" onclick="filterAlerts('limit_move')">🔴 涨跌</button>
                         <button class="btn btn-sm btn-danger" onclick="clearAlerts()" style="margin-left: auto;">🗑 清空</button>
                     </div>
                     <div style="max-height: 250px; overflow-y: auto;" id="alertList">
@@ -1007,10 +1013,26 @@
             };
         }
 
+        // ── 告警类型渲染配置 ──
+        const anomalyTypeMap = {
+            'trans_big':   { icon: '🟣', label: '逐笔大单' },
+            'orderbook':   { icon: '🟠', label: '盘口异动' },
+            'divergence':  { icon: '🟢', label: '内外盘背离' },
+            'turnover':    { icon: '🔵', label: '换手率' },
+            'limit_move':  { icon: '🔴', label: '涨跌停' },
+            'auction':     { icon: '⚪', label: '竞价异常' },
+            'rank_change': { icon: '🔷', label: '排名突变' },
+        };
+
         function renderAlerts() {
             const container = document.getElementById('alertList');
             let filtered = allAlerts;
-            if (monitorFilter === 'buy') {
+
+            // 类型筛选 (AnomalyAlert) vs 方向筛选 (Alert)
+            const typeFilters = ['trans_big', 'orderbook', 'divergence', 'turnover', 'limit_move', 'auction', 'rank_change'];
+            if (typeFilters.includes(monitorFilter)) {
+                filtered = allAlerts.filter(a => (a.type || '') === monitorFilter);
+            } else if (monitorFilter === 'buy') {
                 filtered = allAlerts.filter(a => ((a.side || a.direction) || '').toLowerCase() === 'buy');
             } else if (monitorFilter === 'sell') {
                 filtered = allAlerts.filter(a => ((a.side || a.direction) || '').toLowerCase() === 'sell');
@@ -1027,6 +1049,8 @@
             }
 
             container.innerHTML = filtered.map(a => {
+                // 判断告警类型
+                const isAnomaly = !!a.type;
                 const dir = ((a.side || a.direction) || '').toLowerCase();
                 const isBuy = dir === 'buy';
                 const isSell = dir === 'sell';
@@ -1034,49 +1058,118 @@
                 const label = isBuy ? '买入' : (isSell ? '卖出' : '中性');
                 const icon = isBuy ? '🟢' : (isSell ? '🔴' : '🟡');
 
-                // 级别显示
-                const levelMap = { super_large: '🔴超大单', large: '🟡大单', volume_spike: '⚪放量' };
-                const levelLabel = levelMap[a.level] || a.level || '--';
+                if (isAnomaly) {
+                    // ── AnomalyAlert 渲染 ──
+                    const cfg = anomalyTypeMap[a.type] || { icon: '📡', label: a.type };
+                    const d = a.data || {};
+                    const detailParts = [];
 
-                // MAD 倍数
-                const madInfo = a.mad_multiple ? `${a.mad_multiple}×MAD` : '';
+                    switch (a.type) {
+                        case 'trans_big':
+                            const amtW = (d.amount || 0) / 10000;
+                            detailParts.push(`单笔 ${amtW.toFixed(0)}万`);
+                            if (d.hands) detailParts.push(`${d.hands}手`);
+                            if (d.multiple) detailParts.push(`阈值×${d.multiple}`);
+                            break;
+                        case 'orderbook':
+                            if (d.ratio) detailParts.push(`买卖比 ${d.ratio.toFixed(1)}:1`);
+                            if (d.level) detailParts.push(`${d.level}档`);
+                            if (d.spread_pct) detailParts.push(`价差 ${d.spread_pct.toFixed(2)}%`);
+                            break;
+                        case 'divergence':
+                            if (d.ratio) detailParts.push(`内外比 ${d.ratio.toFixed(2)}:1`);
+                            if (d.duration) detailParts.push(`持续 ${d.duration}拍`);
+                            if (d.price_delta_pct) detailParts.push(`价变 ${d.price_delta_pct.toFixed(1)}%`);
+                            break;
+                        case 'turnover':
+                            if (d.daily_turnover_pct) detailParts.push(`换手 ${d.daily_turnover_pct.toFixed(1)}%`);
+                            if (d.multiple) detailParts.push(`×${d.multiple}`);
+                            break;
+                        case 'limit_move':
+                            if (d.change_pct) detailParts.push(`涨跌 ${d.change_pct.toFixed(1)}%`);
+                            if (d.drop_ratio) detailParts.push(`封单降至 ${(d.drop_ratio*100).toFixed(0)}%`);
+                            break;
+                        case 'auction':
+                            if (d.amount) detailParts.push(`竞价 ${(d.amount/1e4).toFixed(0)}万`);
+                            if (d.multiple) detailParts.push(`×${d.multiple}`);
+                            break;
+                        case 'rank_change':
+                            if (d.jump) detailParts.push(`排名跃升 ${d.jump}位`);
+                            if (d.change_pct) detailParts.push(`涨幅 ${d.change_pct.toFixed(1)}%`);
+                            break;
+                    }
+                    const detailText = detailParts.length ? detailParts.join(' / ') : '';
 
-                // 东方财富验证
-                let fundInfo = '';
-                if (a.super_large_flow || a.large_flow) {
-                    const sl = a.super_large_flow ? (a.super_large_flow/1e4).toFixed(0) + '万' : '--';
-                    const lg = a.large_flow ? (a.large_flow/1e4).toFixed(0) + '万' : '--';
-                    fundInfo = ` | 超大单:${sl} 大单:${lg}`;
+                    let levelBadge = '';
+                    if (a.subtype === 'super_large' || a.subtype === 'giant') levelBadge = ' <span class="badge badge-red">特大</span>';
+                    if (a.subtype === 'seal_loosen') levelBadge = ' <span class="badge badge-red">⚠开板</span>';
+                    if (a.subtype === 'pry_signal') levelBadge = ' <span class="badge badge-green">🔧撬板</span>';
+
+                    return `
+                    <div class="signal-row ${isBuy ? 'signal-buy' : (isSell ? 'signal-sell' : '')}">
+                        <div class="signal-info">
+                            <div>
+                                <span class="signal-code">${a.code || '--'}</span>
+                                <span class="signal-name">${a.name || '--'}</span>
+                                <span style="font-size:11px;margin-left:6px;">${cfg.icon} ${cfg.label}</span>
+                                <span style="font-size:11px;margin-left:4px;">${a.subtype || ''}</span>
+                                ${levelBadge}
+                                <span class="signal-meta"> | ${a._time || a.time || '--'}</span>
+                            </div>
+                            <div class="signal-reason">${detailText}</div>
+                            <div class="signal-meta">
+                                <span class="${colorClass}">${icon} ${label}</span>
+                                ${d.price ? ('| 价: ' + (d.price || 0).toFixed(2)) : ''}
+                            </div>
+                        </div>
+                    </div>`;
+                } else {
+                    // ── 原有 Alert 渲染 (不改) ──
+                    const levelMap = { super_large: '🔴超大单', large: '🟡大单', volume_spike: '⚪放量' };
+                    const levelLabel = levelMap[a.level] || a.level || '--';
+                    const madInfo = a.mad_multiple ? `${a.mad_multiple}×MAD` : '';
+                    let fundInfo = '';
+                    if (a.super_large_flow || a.large_flow) {
+                        const sl = a.super_large_flow ? (a.super_large_flow/1e4).toFixed(0) + '万' : '--';
+                        const lg = a.large_flow ? (a.large_flow/1e4).toFixed(0) + '万' : '--';
+                        fundInfo = ` | 超大单:${sl} 大单:${lg}`;
+                    }
+                    const reasonParts = [];
+                    if (a.hands) reasonParts.push(`${a.hands}手`);
+                    if (a.amount) reasonParts.push(`${(a.amount/10000).toFixed(0)}万元`);
+                    const reasonText = reasonParts.length ? reasonParts.join(' / ') : '--';
+
+                    return `
+                    <div class="signal-row ${isBuy ? 'signal-buy' : (isSell ? 'signal-sell' : '')}">
+                        <div class="signal-info">
+                            <div>
+                                <span class="signal-code">${a.code || '--'}</span>
+                                <span class="signal-name">${a.name || '--'}</span>
+                                <span style="font-size:11px;margin-left:6px;">${levelLabel}</span>
+                                <span class="signal-meta"> | ${a._time || '--'}</span>
+                            </div>
+                            <div class="signal-reason">${reasonText} ${madInfo}</div>
+                            <div class="signal-meta">
+                                <span class="${colorClass}">${icon} ${label}</span>
+                                | 价格: ${(a.price || 0).toFixed(2)}${fundInfo}
+                            </div>
+                        </div>
+                    </div>`;
                 }
-
-                const reasonParts = [];
-                if (a.hands) reasonParts.push(`${a.hands}手`);
-                if (a.amount) reasonParts.push(`${(a.amount/10000).toFixed(0)}万元`);
-                const reasonText = reasonParts.length ? reasonParts.join(' / ') : '--';
-
-                return `
-                <div class="signal-row ${isBuy ? 'signal-buy' : (isSell ? 'signal-sell' : '')}">
-                    <div class="signal-info">
-                        <div>
-                            <span class="signal-code">${a.code || '--'}</span>
-                            <span class="signal-name">${a.name || '--'}</span>
-                            <span style="font-size:11px;margin-left:6px;">${levelLabel}</span>
-                            <span class="signal-meta"> | ${a._time || '--'}</span>
-                        </div>
-                        <div class="signal-reason">${reasonText} ${madInfo}</div>
-                        <div class="signal-meta">
-                            <span class="${colorClass}">${icon} ${label}</span>
-                            | 价格: ${(a.price || 0).toFixed(2)}${fundInfo}
-                        </div>
-                    </div>
-                </div>`;
             }).join('');
         }
 
         function filterAlerts(type) {
             monitorFilter = type;
             document.querySelectorAll('#alertFilters .btn').forEach(b => b.classList.remove('btn-primary'));
-            const filterBtn = document.getElementById('btnFilter' + type.charAt(0).toUpperCase() + type.slice(1));
+            // 按钮 ID 映射
+            const btnMap = {
+                'all': 'btnFilterAll', 'buy': 'btnFilterBuy', 'sell': 'btnFilterSell', 'neutral': 'btnFilterNeutral',
+                'trans_big': 'btnFilterTrans', 'orderbook': 'btnFilterOB', 'divergence': 'btnFilterDiv',
+                'turnover': 'btnFilterTO', 'limit_move': 'btnFilterLM',
+            };
+            const btnId = btnMap[type] || ('btnFilter' + type.charAt(0).toUpperCase() + type.slice(1));
+            const filterBtn = document.getElementById(btnId);
             if (filterBtn) filterBtn.classList.add('btn-primary');
             renderAlerts();
         }
