@@ -1,5 +1,41 @@
 # 更新日志
 
+## v2.4.0 (2026-06-19)
+
+### 新增
+- **六模块异动检测**：6 个独立检测器，共用 SSE 推送管线
+  - `DivergenceDetector` 内外盘背离：价涨内盘大/价跌外盘大/极端背离(3拍)
+  - `OrderbookDetector` 盘口异动：挂单突变/盘口失衡/大单撤单/价差突变（四维）
+  - `LimitMoveDetector` 涨跌停加速：封板松动/撬板信号/逼近加速
+  - `TurnoverDetector` 换手率异动：自身MAD基线，5分钟增量/全天累计
+  - `TransBigDetector` 逐笔大单：独立3秒线程 + 预筛选 + 2000万下限 + 动态基线
+  - `RankChangeDetector` 排名突变：自选池81只，跃升>30位或涨幅突变
+- **AnomalyAlert + SimpleQueue**：新告警值对象，与原有 `Alert` 并行不冲突
+- **五档盘口全量**：`QuoteSnapshot` 扩展至 33 字段，含 bid/ask 1-5 价+量 + last_close
+- **ANOMALY_DETECTOR_CONFIG**：6 模块所有阈值均可配置
+- **14条单元测试**：`tests/unit/test_anomaly_detectors.py` 全覆盖
+- **设计文档**：`docs/anomaly_detection_design.md` 含 Q1-Q8 完整决策记录
+
+### 修复
+- TDX 数据源 (`tdx_source.py`)：新增 `get_stock_info`（原基类返回空 `{}` 导致回退 AKShare）
+- TDX 数据源：添加 `_safe_decode` 修复 pytdx GBK 名称编码
+- 实时行情：从本地 DB 缓存填充 `name` 字段（pytdx quotes 不返回名称）
+- `db_api.py`：分钟数据查询日期格式修复（`date_fmt` 未使用导致 LIKE 不匹配）
+- `config/settings.py`：数据源改回 `primary: tdx, fallback: akshare`
+
+### 前端
+- 新告警类型渲染：7 种类型标签 + 颜色 + 详情自适应
+- 新增筛选按钮：逐笔/盘口/背离/换手/涨跌
+- `web/monitor_demo.html`：示范页面
+
+### 数据统计
+- 81只股票日线 48,075 条（2024-01 ~ 2026-06）
+- 5分钟K线 64,800 条 / 1分钟分时 349,920 条
+- 流通股本缓存 81 只 / 换手率历史中位数 81 只
+- 交易日历 9,402 天
+
+---
+
 ## v2.3.0 (2026-06-17)
 
 ### 新增
