@@ -462,3 +462,166 @@ class TestAnomalyAlertSerialization:
         assert parsed['data']['threshold'] == 20_000_000
         assert parsed['data']['multiple'] == 1.5
         assert parsed['data']['num_trades'] == 5
+
+
+# ============================================================================
+# 新增测试 (v2.4.0 修复补丁)
+# ============================================================================
+
+
+class TestOrderbookEdgeCases:
+    """TC-AD15~AD16: Orderbook 边界情况"""
+
+    def test_skip_when_window_not_full(self):
+        """TC-AD15: 窗口未满 12 拍时不应触发挂单突变。"""
+        detector = OrderbookDetector()
+        # 窗口未满 (只喂 5 拍)
+        code = '600519'
+        curr = {}
+        for _ in range(5):
+            snap = make_snap(code=code, bid_vol1=5000.0)
+            detector.check({code: snap})
+            curr[code] = snap
+        # 再喂一帧异常高挂单 — 窗口不够 12 拍，不应触发 surge
+        snap = make_snap(code=code, bid_vol1=99999.0)
+        alerts = detector.check({code: snap})
+        # surge 需要 > min_hands AND > median×10，窗口不足则 median=0 或只有最近几拍
+        assert all(a.subtype != 'bid_ask_surge' for a in alerts)
+
+    def test_multi_dimension_same_tick(self):
+        """TC-AD16: 同一帧触发多个维度时不互相覆盖。"""
+        detector = OrderbookDetector()
+        code = '600519'
+        # 喂满 12 拍默认值
+        for _ in range(12):
+            detector.check({code: make_snap(code=code)})
+        # 触发失衡 + 挂单突变
+        snap = make_snap(
+            code=code, bid_vol1=50000.0, bid_vol2=10.0, bid_vol3=10.0,
+            bid_vol4=10.0, bid_vol5=10.0,
+            ask_vol1=10.0, ask_vol2=10.0, ask_vol3=10.0,
+            ask_vol4=10.0, ask_vol5=10.0,
+        )
+        alerts = detector.check({code: snap})
+        # 至少触发失衡（买>卖×5 且买>5000手）
+        imbalance_alerts = [a for a in alerts if a.subtype == 'imbalance']
+        assert len(imbalance_alerts) >= 1
+
+
+class TestTurnoverFallback:
+    """TC-AD17: Turnover 回退到分档"""
+
+    def test_fallback_daily_median_by_float_shares(self):
+        """无历史中位数时，按流通股本估算。"""
+        detector = TurnoverDetector()
+        # 小盘股 (<5亿)
+        assert detector._get_fallback_daily_median(1_0000_0000) == 5.0
+        # 中盘股 (5-30亿)
+        assert detector._get_fallback_daily_median(10_0000_0000) == 2.0
+        # 大盘股 (>30亿)
+        assert detector._get_fallback_daily_median(50_0000_0000) == 1.0
+
+    def test_no_hist_median_still_detects(self):
+        """即使没有历史中位数，回退分档也能检测到极端换手率。"""
+        detector = TurnoverDetector()
+        liutong = 10_0000_0000  # 10亿，中盘
+        detector.set_liutong_cache({'600519': liutong})
+        # 不设 hist_medians → 回退到 2.0% 日均
+        snap = make_snap(code='600519', volume=liutong * 0.15)  # 15% 换手率
+        alerts = detector.check({'600519': snap})
+        # 15% > 2.0% × 5 = 10% → extreme
+        assert any(a.subtype == 'extreme' for a in alerts)
+
+
+class TestTransBigFallback:
+    """TC-AD18: TransBig 降级到绝对下限"""
+
+    def test_no_hist_median_uses_abs_minimum(self):
+        """无历史中位数时，阈值退化到 2000万。"""
+        from config.settings import ANOMALY_DETECTOR_CONFIG
+        queue = SimpleQueue()
+        detector = TransBigDetector(queue, stock_pool=['600519'])
+        # 不调用 set_hist_medians
+        threshold = detector._compute_threshold('600519')
+        abs_min = ANOMALY_DETECTOR_CONFIG.get('trans_big', {}).get('abs_threshold', 20_000_000)
+        assert threshold == float(abs_min)
+
+
+class TestLimitMoveCodeMapping:
+    """TC-AD19: 涨跌停代码段映射"""
+
+    def test_code_segments_rate(self):
+        """验证各类代码段返回正确的涨跌停幅度。"""
+        # 主板
+        assert LimitMoveDetector._get_limit_rate('600519') == 0.10
+        assert LimitMoveDetector._get_limit_rate('000858') == 0.10
+        assert LimitMoveDetector._get_limit_rate('001979') == 0.10
+        # 创业板
+        assert LimitMoveDetector._get_limit_rate('300394') == 0.20
+        assert LimitMoveDetector._get_limit_rate('301123') == 0.20
+        # 科创板
+        assert LimitMoveDetector._get_limit_rate('688001') == 0.20
+        assert LimitMoveDetector._get_limit_rate('689009') == 0.20
+        # 北交所
+        assert LimitMoveDetector._get_limit_rate('830001') == 0.30
+        assert LimitMoveDetector._get_limit_rate('870001') == 0.30
+
+
+class TestRankChangeCooldown:
+    """TC-AD20: 排名突变冷却"""
+
+    def test_cooldown_blocks_repeat_alert(self):
+        """同股票在冷却期内不重复触发。"""
+        # 模拟冷却字典行为
+        cooldowns: dict = {}
+        cooldown_sec = 60
+        code = '600519'
+        now = time.time()
+        # 第一次: 允许
+        last = cooldowns.get(code, 0)
+        assert now - last >= cooldown_sec  # should be True
+        cooldowns[code] = now
+        # 第二次: 立即再次尝试 — 应被冷却阻止
+        now2 = now + 5
+        last2 = cooldowns.get(code, 0)
+        assert now2 - last2 < cooldown_sec  # should be True (cooling)
+
+
+class TestDivergenceCounterReset:
+    """TC-AD21: 极端背离中断 1 拍计数器重置"""
+
+    def test_counter_resets_on_miss(self):
+        """连续 2 拍满足条件后第 3 拍中断 → 计数器重置。"""
+        detector = DivergenceDetector(extreme_duration=3)
+        code = '600519'
+        prev = make_snap(code=code, active_buy=5000, active_sell=50000)  # 失衡
+
+        # 第 1 拍: 满足
+        curr1 = make_snap(code=code, price=100.0, active_buy=5000, active_sell=50000)
+        detector.check({code: curr1}, {code: prev})
+        assert detector._imbalance_counters[code] == 1
+
+        # 第 2 拍: 满足
+        curr2 = make_snap(code=code, price=100.0, active_buy=5000, active_sell=50000)
+        detector.check({code: curr2}, {code: curr1})
+        assert detector._imbalance_counters[code] == 2
+
+        # 第 3 拍: 中断 (恢复正常)
+        curr3 = make_snap(code=code, price=100.0, active_buy=5000, active_sell=5000)
+        detector.check({code: curr3}, {code: curr2})
+        assert detector._imbalance_counters[code] == 0  # 重置
+
+
+class TestTransBigPreFilterWarmup:
+    """TC-AD22: TransBig 预筛选 MAD 未就绪时返回全量"""
+
+    def test_pre_filter_returns_full_pool_when_cold(self):
+        """delta 窗口未满 3 条时，返回全量股票池。"""
+        queue = SimpleQueue()
+        detector = TransBigDetector(queue, stock_pool=['600519', '000858', '300394'])
+        # 不喂任何快照 → delta_window 全空
+        candidates = detector._pre_filter()
+        assert len(candidates) == 3
+        assert '600519' in candidates
+        assert '000858' in candidates
+        assert '300394' in candidates

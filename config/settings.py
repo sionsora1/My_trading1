@@ -230,7 +230,7 @@ ANOMALY_DETECTOR_CONFIG = {
     'trans_big': {
         'interval_sec': 3,             # 独立线程轮询间隔
         'abs_threshold': 20_000_000,   # 绝对下限 (2000万)
-        'dynamic_multiple': 30,        # 日均笔额 × N
+        'dynamic_multiple': 2,          # 分钟成交额中位数 × N (配合 _compute_trans_medians)
         'lookback_days': 30,           # 历史基线天数
         'super_large_multiple': 3,     # 特大单倍率
         'super_large_abs': 50_000_000, # 特大单绝对下限 (5000万)

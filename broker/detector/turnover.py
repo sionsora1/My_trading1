@@ -99,6 +99,43 @@ class TurnoverDetector:
             extra={'data': {'count': len(medians)}},
         )
 
+    def _acquire_cooldown(self, code: str, subtype: str, now: float) -> bool:
+        """检查并设置冷却期 (与 divergence/orderbook/limit_move 保持一致的接口)。
+
+        Args:
+            code: 股票代码
+            subtype: 子类型标识 (spike/hot/extreme)
+            now: 当前时间戳
+
+        Returns:
+            True 如果允许触发, False 如果在冷却期
+        """
+        key = f"{code}:{subtype}"
+        last = self._cooldowns.get(key, 0.0)
+        if now - last < self._cooldown_sec:
+            return False
+        self._cooldowns[key] = now
+        return True
+
+    def _get_fallback_daily_median(self, liutong: float) -> float:
+        """DB 无历史数据时，按流通股本估算日均换手率 (%)。
+
+        基于 81 只股票池近 60 日实测数据的分档统计:
+            <5亿 (小盘): 5%  /  5-30亿 (中盘): 2%  /  >30亿 (大盘): 1%
+
+        Args:
+            liutong: 流通股本 (股)
+
+        Returns:
+            估算的日均换手率 (%)
+        """
+        if liutong < 5_0000_0000:       # <5亿: 小盘
+            return 5.0
+        elif liutong < 30_0000_0000:     # 5-30亿: 中盘
+            return 2.0
+        else:                             # >30亿: 大盘
+            return 1.0
+
     def check(self, curr: Dict[str, QuoteSnapshot]) -> List[AnomalyAlert]:
         """检测换手率异动。
 
@@ -122,13 +159,7 @@ class TurnoverDetector:
             if not liutong or liutong <= 0:
                 continue
 
-            # ── 冷却期检查 ──
-            last_alert = self._cooldowns.get(code, 0)
-            if now - last_alert < self._cooldown_sec:
-                continue
-
             try:
-                alerted = False
 
                 # ── 日内换手率 (%) ──
                 # volume 为累计成交量（股），liutong 为流通股本（股）
@@ -149,6 +180,12 @@ class TurnoverDetector:
                 daily_median = hist.get('daily', 0.0)
                 five_min_median = hist.get('5min', 0.0)
 
+                # 回退: DB 无历史数据时，按流通股本分档估算
+                if daily_median <= 0 and liutong > 0:
+                    daily_median = self._get_fallback_daily_median(liutong)
+                if five_min_median <= 0 and daily_median > 0:
+                    five_min_median = daily_median / 48.0  # 48个5分钟/交易日
+
                 # ============================================================
                 # 检测 1: 5分钟换手率增量 spike
                 # ============================================================
@@ -163,32 +200,32 @@ class TurnoverDetector:
                             else 0.0
                         )
                         if multiple_5m >= self._five_min_multiple:
-                            alerts.append(AnomalyAlert(
-                                type='turnover',
-                                subtype='spike',
-                                code=code,
-                                name=snap.name,
-                                direction='neutral',
-                                time=snap.time,
-                                data={
-                                    'daily_turnover_pct': round(daily_turnover, 3),
-                                    'delta_5m_pct': round(delta_5m_turnover, 3),
-                                    'median_5m': round(five_min_median, 3),
-                                    'multiple': round(multiple_5m, 1),
-                                    'price': snap.price,
-                                },
-                            ))
-                            logger.info(
-                                '换手率异动: spike',
-                                extra={'data': {
-                                    'code': code,
-                                    'name': snap.name,
-                                    'daily_turnover_pct': round(daily_turnover, 3),
-                                    'delta_5m_pct': round(delta_5m_turnover, 3),
-                                    'multiple': round(multiple_5m, 1),
-                                }},
-                            )
-                            alerted = True
+                            if self._acquire_cooldown(code, 'spike', now):
+                                alerts.append(AnomalyAlert(
+                                    type='turnover',
+                                    subtype='spike',
+                                    code=code,
+                                    name=snap.name,
+                                    direction='neutral',
+                                    time=snap.time,
+                                    data={
+                                        'daily_turnover_pct': round(daily_turnover, 3),
+                                        'delta_5m_pct': round(delta_5m_turnover, 3),
+                                        'median_5m': round(five_min_median, 3),
+                                        'multiple': round(multiple_5m, 1),
+                                        'price': snap.price,
+                                    },
+                                ))
+                                logger.info(
+                                    '换手率异动: spike',
+                                    extra={'data': {
+                                        'code': code,
+                                        'name': snap.name,
+                                        'daily_turnover_pct': round(daily_turnover, 3),
+                                        'delta_5m_pct': round(delta_5m_turnover, 3),
+                                        'multiple': round(multiple_5m, 1),
+                                    }},
+                                )
 
                 # ============================================================
                 # 检测 2 & 3: 全天累计换手率 hot / extreme
@@ -196,63 +233,59 @@ class TurnoverDetector:
                 if daily_median > 0:
                     daily_multiple = daily_turnover / daily_median
                     if daily_turnover >= daily_median * self._daily_extreme_multiple:
-                        alerts.append(AnomalyAlert(
-                            type='turnover',
-                            subtype='extreme',
-                            code=code,
-                            name=snap.name,
-                            direction='neutral',
-                            time=snap.time,
-                            data={
-                                'daily_turnover_pct': round(daily_turnover, 3),
-                                'delta_5m_pct': 0.0,
-                                'median_5m': round(daily_median, 3),
-                                'multiple': round(daily_multiple, 1),
-                                'price': snap.price,
-                            },
-                        ))
-                        logger.info(
-                            '换手率异动: extreme',
-                            extra={'data': {
-                                'code': code,
-                                'name': snap.name,
-                                'daily_turnover_pct': round(daily_turnover, 3),
-                                'daily_median': round(daily_median, 3),
-                                'multiple': round(daily_multiple, 1),
-                            }},
-                        )
-                        alerted = True
+                        if self._acquire_cooldown(code, 'extreme', now):
+                            alerts.append(AnomalyAlert(
+                                type='turnover',
+                                subtype='extreme',
+                                code=code,
+                                name=snap.name,
+                                direction='neutral',
+                                time=snap.time,
+                                data={
+                                    'daily_turnover_pct': round(daily_turnover, 3),
+                                    'delta_5m_pct': 0.0,
+                                    'median_5m': round(daily_median, 3),
+                                    'multiple': round(daily_multiple, 1),
+                                    'price': snap.price,
+                                },
+                            ))
+                            logger.info(
+                                '换手率异动: extreme',
+                                extra={'data': {
+                                    'code': code,
+                                    'name': snap.name,
+                                    'daily_turnover_pct': round(daily_turnover, 3),
+                                    'daily_median': round(daily_median, 3),
+                                    'multiple': round(daily_multiple, 1),
+                                }},
+                            )
                     elif daily_turnover >= daily_median * self._daily_hot_multiple:
-                        alerts.append(AnomalyAlert(
-                            type='turnover',
-                            subtype='hot',
-                            code=code,
-                            name=snap.name,
-                            direction='neutral',
-                            time=snap.time,
-                            data={
-                                'daily_turnover_pct': round(daily_turnover, 3),
-                                'delta_5m_pct': 0.0,
-                                'median_5m': round(daily_median, 3),
-                                'multiple': round(daily_multiple, 1),
-                                'price': snap.price,
-                            },
-                        ))
-                        logger.info(
-                            '换手率异动: hot',
-                            extra={'data': {
-                                'code': code,
-                                'name': snap.name,
-                                'daily_turnover_pct': round(daily_turnover, 3),
-                                'daily_median': round(daily_median, 3),
-                                'multiple': round(daily_multiple, 1),
-                            }},
-                        )
-                        alerted = True
-
-                # ── 记录冷却时间 ──
-                if alerted:
-                    self._cooldowns[code] = now
+                        if self._acquire_cooldown(code, 'hot', now):
+                            alerts.append(AnomalyAlert(
+                                type='turnover',
+                                subtype='hot',
+                                code=code,
+                                name=snap.name,
+                                direction='neutral',
+                                time=snap.time,
+                                data={
+                                    'daily_turnover_pct': round(daily_turnover, 3),
+                                    'delta_5m_pct': 0.0,
+                                    'median_5m': round(daily_median, 3),
+                                    'multiple': round(daily_multiple, 1),
+                                    'price': snap.price,
+                                },
+                            ))
+                            logger.info(
+                                '换手率异动: hot',
+                                extra={'data': {
+                                    'code': code,
+                                    'name': snap.name,
+                                    'daily_turnover_pct': round(daily_turnover, 3),
+                                    'daily_median': round(daily_median, 3),
+                                    'multiple': round(daily_multiple, 1),
+                                }},
+                            )
 
             except Exception:
                 logger.error(

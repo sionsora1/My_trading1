@@ -34,6 +34,15 @@
 - 流通股本缓存 81 只 / 换手率历史中位数 81 只
 - 交易日历 9,402 天
 
+### 修复 (2026-06-20)
+
+- **涨跌停代码段补全**：`_get_limit_rate` 新增 `301xxx`(创业板)、`689xxx`(科创板)、`8xxxxx`(北交所 30%) 映射
+- **逐笔大单动态基线修复**：`_compute_trans_medians` 查询排除不存在的 `num_trades` 列，改用分钟 `amount` 中位数，`_dynamic_multiple` 30→2 适配分钟粒度
+- **换手率检测器**：无 DB 历史中位数时，按流通股本分档回退（小盘 5%/中盘 2%/大盘 1%）；冷却从 per-code 改为 per-subtype
+- **盘口检测器**：新增 `set_liutong_cache`，`_get_min_hands_for_stock` 按股本分档调整阈值（小盘 ×0.25、大盘 ×2.5）
+- **排名突变检测**：新增同股票 60s 冷却
+- **测试**：新增 9 条边界测试（23→32 条）；修复 `test_market_watcher.py` QuoteSnapshot 扩展后 `_make_snap` 缺失字段
+
 ---
 
 ## v2.3.0 (2026-06-17)

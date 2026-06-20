@@ -82,6 +82,8 @@ class OrderbookDetector:
         self._prev_snapshots: Dict[str, QuoteSnapshot] = {}
         # 冷却期: code -> {subtype: last_alert_timestamp}
         self._cooldowns: Dict[str, Dict[str, float]] = {}
+        # 流通股本缓存 (按股本分档调整阈值)
+        self._liutong_cache: Dict[str, float] = {}
 
         logger.info(
             'OrderbookDetector 初始化完成',
@@ -101,6 +103,44 @@ class OrderbookDetector:
     # ──────────────────────────────────────────────────────────────────
     # 公开接口
     # ──────────────────────────────────────────────────────────────────
+
+    def set_liutong_cache(self, liutong: Dict[str, float]) -> None:
+        """设置流通股本缓存，用于按股本分档调整阈值。
+
+        启动时由 MonitorEngine 调用，与 TurnoverDetector 共享同一份数据。
+
+        Args:
+            liutong: {code: float_shares}，float_shares 单位为股
+        """
+        self._liutong_cache = liutong
+        logger.info(
+            '盘口检测器: 流通股本缓存已加载',
+            extra={'data': {'count': len(liutong)}},
+        )
+
+    def _get_min_hands_for_stock(self, code: str, base_min: float) -> float:
+        """按流通股本分档调整最低手数阈值。
+
+        小盘 (<5亿):  base_min * 0.25  (更容易触发)
+        中盘 (5-30亿): base_min         (保持默认)
+        大盘 (>30亿):   base_min * 2.5  (提高门槛避免盲区)
+
+        Args:
+            code: 股票代码
+            base_min: 基准最低手数 (配置值)
+
+        Returns:
+            调整后的最低手数
+        """
+        liutong = self._liutong_cache.get(code, 0)
+        if liutong <= 0:
+            return base_min
+        if liutong < 5_0000_0000:       # <5亿: 小盘
+            return base_min * 0.25
+        elif liutong < 30_0000_0000:     # 5-30亿: 中盘
+            return base_min
+        else:                             # >30亿: 大盘
+            return base_min * 2.5
 
     def check(self, curr: Dict[str, QuoteSnapshot]) -> List[AnomalyAlert]:
         """检测当前快照全集中的盘口异动。
@@ -216,7 +256,7 @@ class OrderbookDetector:
             median = bid_medians[i]
             cur_vol = curr_bid_vols[i]
             threshold = median * self._bid_change_multiple
-            if cur_vol > threshold and cur_vol > self._bid_change_min_hands:
+            if cur_vol > threshold and cur_vol > self._get_min_hands_for_stock(code, self._bid_change_min_hands):
                 alerts.append(
                     AnomalyAlert(
                         type='orderbook',
@@ -241,7 +281,7 @@ class OrderbookDetector:
             median = ask_medians[i]
             cur_vol = curr_ask_vols[i]
             threshold = median * self._bid_change_multiple
-            if cur_vol > threshold and cur_vol > self._bid_change_min_hands:
+            if cur_vol > threshold and cur_vol > self._get_min_hands_for_stock(code, self._bid_change_min_hands):
                 alerts.append(
                     AnomalyAlert(
                         type='orderbook',
@@ -396,7 +436,7 @@ class OrderbookDetector:
             cur_vol = curr_bid_vols[i]
             surge_threshold = median * self._bid_change_multiple
             # 上一拍是巨量挂单
-            if prev_vol > surge_threshold and prev_vol > self._bid_change_min_hands:
+            if prev_vol > surge_threshold and prev_vol > self._get_min_hands_for_stock(code, self._bid_change_min_hands):
                 # 当前拍消失
                 if cur_vol < self._cancel_disappear_hands:
                     alerts.append(
@@ -425,7 +465,7 @@ class OrderbookDetector:
             cur_vol = curr_ask_vols[i]
             surge_threshold = median * self._bid_change_multiple
             # 上一拍是巨量挂单
-            if prev_vol > surge_threshold and prev_vol > self._bid_change_min_hands:
+            if prev_vol > surge_threshold and prev_vol > self._get_min_hands_for_stock(code, self._bid_change_min_hands):
                 # 当前拍消失
                 if cur_vol < self._cancel_disappear_hands:
                     alerts.append(

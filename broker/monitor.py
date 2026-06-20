@@ -671,16 +671,19 @@ class MonitorEngine:
             turnover_medians = self._compute_turnover_medians()
             self._turnover_detector.set_liutong_cache(liutong)
             self._turnover_detector.set_hist_medians(turnover_medians)
+            # 同步共享给盘口检测器 (用于按股本分档)
+            self._orderbook_detector.set_liutong_cache(liutong)
             logger.info(f"换手率缓存: {len(liutong)} 流通股本, {len(turnover_medians)} 历史中位数")
         except Exception as e:
             logger.error(f"换手率缓存加载失败: {e}")
 
         try:
-            # 涨跌停价格需要一次 poll 获取 last_close
-            # 这里先设一个空壳，_poll_loop 第一轮后自动填入
-            pass
+            trans_medians = self._compute_trans_medians()
+            self._trans_medians_cache = trans_medians
+            logger.info(f"逐笔大单历史中位数: {len(trans_medians)} 只")
         except Exception as e:
-            logger.error(f"涨跌停价格加载失败: {e}")
+            self._trans_medians_cache = {}
+            logger.warning(f"逐笔大单历史中位数加载失败 (分钟K线不可用，降级至绝对下限): {e}")
 
     def _load_liutongguben(self) -> Dict[str, float]:
         """从 finance_detail 表加载流通股本 (float_shares)。"""
@@ -732,6 +735,55 @@ class MonitorEngine:
             logger.warning(f"换手率中位数计算失败: {e}")
             return {}
 
+    def _compute_trans_medians(self) -> Dict[str, float]:
+        """从 minute_bars 估算每只股票的分钟成交额中位数。
+
+        用作 trans_big 动态基线的代理值：分钟成交额中位数越大的股票，
+        触发逐笔大单的阈值越高。配合 _dynamic_multiple (默认 2) 使用。
+        如果分钟数据不可用，返回空字典，trans_big 降级到 2000万 绝对下限。
+
+        Returns:
+            {code: 分钟成交额中位数(元)}
+        """
+        try:
+            import statistics
+            from data.database import SQLiteManager
+            from datetime import timedelta
+
+            db = SQLiteManager()
+            medians: Dict[str, float] = {}
+            now = datetime.now()
+            end_date = now.strftime("%Y%m%d")
+            start_date = (now - timedelta(days=60)).strftime("%Y%m%d")
+
+            for code in self._stock_pool:
+                ts_code = f"{code}.SH" if code.startswith(('6', '9')) else f"{code}.SZ"
+                try:
+                    rows = db._conn.execute(
+                        "SELECT amount FROM minute_bars "
+                        "WHERE ts_code=? AND trade_date BETWEEN ? AND ? "
+                        "AND amount > 0",
+                        (ts_code, start_date, end_date),
+                    ).fetchall()
+                    if len(rows) < 100:  # 至少100条有效分钟K
+                        continue
+                    amounts = [
+                        float(r['amount']) for r in rows
+                        if r['amount'] and float(r['amount']) > 0
+                    ]
+                    if amounts:
+                        medians[code] = statistics.median(amounts)
+                except Exception:
+                    continue
+
+            db.close()
+            count = len(medians)
+            logger.info(f"逐笔大单动态基线: {count}/{len(self._stock_pool)} 只")
+            return medians
+        except Exception as e:
+            logger.warning(f"逐笔大单动态基线计算失败: {e}")
+            return {}
+
     def _load_limit_prices(self, curr: Dict[str, 'QuoteSnapshot']) -> None:
         """从当前快照计算涨跌停价格并注入 limit_move 检测器。
 
@@ -761,6 +813,9 @@ class MonitorEngine:
         pct_to = cfg.get('pct_jump_to', 5.0)
 
         alerts: List[AnomalyAlert] = []
+        now = time.time()
+        now_str = datetime.now().strftime('%H:%M:%S')
+        cooldown_sec = cfg.get('cooldown_sec', 60)
 
         # 按涨跌幅排序得到当前排名
         sorted_curr = sorted(curr.items(), key=lambda x: x[1].change_pct, reverse=True)
@@ -771,7 +826,9 @@ class MonitorEngine:
             self._rank_cache = curr_rank
             return []
 
-        now_str = datetime.now().strftime('%H:%M:%S')
+        # 冷却字典 (同股票 60 秒冷却)
+        if not hasattr(self, '_rank_cooldowns'):
+            self._rank_cooldowns: Dict[str, float] = {}
 
         for code in curr:
             snap = curr[code]
@@ -779,7 +836,11 @@ class MonitorEngine:
             cur_rank_val = curr_rank.get(code, 999)
             jump = prev_rank - cur_rank_val
 
-            if jump >= rank_jump:
+            # 冷却检查
+            last_alert = self._rank_cooldowns.get(code, 0)
+            cooling = now - last_alert < cooldown_sec
+
+            if jump >= rank_jump and not cooling:
                 alerts.append(AnomalyAlert(
                     type='rank_change', subtype='rank_surge',
                     code=code, name=snap.name, direction='neutral', time=now_str,
@@ -788,9 +849,10 @@ class MonitorEngine:
                         'jump': jump, 'change_pct': round(snap.change_pct, 2),
                     },
                 ))
+                self._rank_cooldowns[code] = now
 
             # 涨幅突变
-            if snap.change_pct > pct_to:
+            if snap.change_pct > pct_to and not cooling:
                 # 检查是否从低涨幅跳上来 (需要历史记录)
                 had_low = any(
                     prev_snap.change_pct < pct_from
@@ -806,6 +868,7 @@ class MonitorEngine:
                             'price': snap.price,
                         },
                     ))
+                    self._rank_cooldowns[code] = now
 
         self._rank_cache = curr_rank
         return alerts
@@ -841,6 +904,8 @@ class MonitorEngine:
             self._trans_big_detector = TransBigDetector(
                 queue=self._trans_queue, stock_pool=self._stock_pool,
             )
+            if self._trans_medians_cache:
+                self._trans_big_detector.set_hist_medians(self._trans_medians_cache)
             self._trans_big_detector.start()
 
             # 启动 TDX 轮询线程

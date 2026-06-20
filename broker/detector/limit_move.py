@@ -103,9 +103,10 @@ class LimitMoveDetector:
     def _get_limit_rate(code: str) -> float:
         """根据股票代码返回涨跌停幅度。
 
-        主板 (60xxxx / 00xxxx): ±10%
-        科创板 (688xxx):       ±20%
-        创业板 (300xxx):       ±20%
+        主板 (60xxxx / 00xxxx / 001xxx): ±10%
+        科创板 (688xxx / 689xxx):        ±20%
+        创业板 (300xxx / 301xxx):        ±20%
+        北交所 (8xxxxx):                 ±30%
 
         Args:
             code: 股票代码
@@ -113,10 +114,10 @@ class LimitMoveDetector:
         Returns:
             涨跌停幅度 (小数)
         """
-        if code.startswith('688'):
+        if code.startswith(('688', '689', '300', '301')):
             return 0.20
-        if code.startswith('300'):
-            return 0.20
+        if code.startswith('8'):
+            return 0.30
         return 0.10
 
     # ------------------------------------------------------------------
