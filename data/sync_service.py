@@ -435,57 +435,56 @@ class DataSyncService:
                     if not api.connect(ip, port, time_out=5):
                         continue
 
-                    items = api.get_finance_info(market, symbol)
+                    item = api.get_finance_info(market, symbol)
                     api.disconnect()
                     api = None
 
-                    if not items:
+                    if not item or not isinstance(item, dict):
                         break
 
-                    rows = []
-                    for item in items:
-                        year = str(item.get('year', '')).strip()
-                        month = str(item.get('month', '')).strip().zfill(2)
-                        day = str(item.get('day', '')).strip().zfill(2)
-                        report_date = f'{year}{month}{day}'
+                    # TDX 返回单个 dict，直接用 updated_date 作为报告期
+                    updated = str(item.get('updated_date', '')).strip()
+                    if len(updated) == 8:
+                        report_date = updated
+                    else:
+                        from datetime import datetime
+                        report_date = datetime.now().strftime('%Y%m%d')
 
-                        # 映射 pytdx 字段到 DB 列名
-                        rows.append({
-                            'ts_code': code,
-                            'report_date': report_date,
-                            'total_shares': item.get('totalshare'),
-                            'float_shares': item.get('liqshares'),
-                            'state_shares': item.get('stateshares'),
-                            'legal_person_shares': item.get('lpshares'),
-                            'b_shares': item.get('bshares'),
-                            'h_shares': item.get('hshares'),
-                            'employee_shares': item.get('empshares'),
-                            'total_assets': item.get('totalassets'),
-                            'current_assets': item.get('curassets'),
-                            'fixed_assets': item.get('fixedassets'),
-                            'intangible_assets': item.get('intangibleassets'),
-                            'net_equity': item.get('netequity'),
-                            'current_liabilities': item.get('curliabilities'),
-                            'long_term_liabilities': item.get('ltliabilities'),
-                            'operating_revenue': item.get('operatingrevenue'),
-                            'operating_profit': item.get('operatingprofit'),
-                            'business_profit': item.get('busprofit'),
-                            'net_profit_after_tax': item.get('netprofit'),
-                            'retained_earnings': item.get('retainedearnings'),
-                            'operating_cf': item.get('operatingcf'),
-                            'total_cf': item.get('totalcf'),
-                            'capital_reserve': item.get('capitalreserve'),
-                            'shareholder_count': item.get('shareholdercount'),
-                            'net_assets_ps': item.get('netassetsps'),
-                            'investment_income': item.get('investincome'),
-                            'inventory': item.get('inventory'),
-                            'receivables': item.get('receivables'),
-                            'ipo_date': str(item.get('ipodate', '')),
-                        })
+                    rows = [{
+                        'ts_code': code,
+                        'report_date': report_date,
+                        'total_shares': item.get('zongguben'),
+                        'float_shares': item.get('liutongguben'),
+                        'state_shares': item.get('guojiagu'),
+                        'legal_person_shares': item.get('farengu'),
+                        'b_shares': item.get('bgu'),
+                        'h_shares': item.get('hgu'),
+                        'employee_shares': item.get('zhigonggu'),
+                        'total_assets': item.get('zongzichan'),
+                        'current_assets': item.get('liudongzichan'),
+                        'fixed_assets': item.get('gudingzichan'),
+                        'intangible_assets': item.get('wuxingzichan'),
+                        'net_equity': item.get('jingzichan'),
+                        'current_liabilities': item.get('liudongfuzhai'),
+                        'long_term_liabilities': item.get('changqifuzhai'),
+                        'operating_revenue': item.get('zhuyingshouru'),
+                        'operating_profit': item.get('zhuyinglirun'),
+                        'business_profit': item.get('yingyelirun'),
+                        'net_profit_after_tax': item.get('jinglirun'),
+                        'retained_earnings': item.get('weifenpeilirun'),
+                        'operating_cf': item.get('jingyingxianjinliu'),
+                        'total_cf': item.get('zongxianjinliu'),
+                        'capital_reserve': item.get('zibengongjijin'),
+                        'shareholder_count': item.get('gudongrenshu'),
+                        'net_assets_ps': item.get('meigujingzichan'),
+                        'investment_income': item.get('touzishouyu'),
+                        'inventory': item.get('cunhuo'),
+                        'receivables': item.get('yingshouzhangkuan'),
+                        'ipo_date': str(item.get('ipo_date', '')),
+                    }]
 
-                    if rows:
-                        self.db.upsert_finance_detail(rows)
-                        count += len(rows)
+                    self.db.upsert_finance_detail(rows)
+                    count += len(rows)
 
                     break  # 成功
 
