@@ -352,14 +352,14 @@ class Detector:
     # 两个条件都满足才触发，避免单一指标误判
     SUPER_LARGE_MEDIAN_RATIO = 3.0    # delta 至少是 median 的 3 倍
     SUPER_LARGE_MAD = 5.0             # 偏离至少 5 倍 MAD
-    LARGE_MEDIAN_RATIO = 2.0          # delta 至少是 median 的 2 倍
-    LARGE_MAD = 3.0                   # 偏离至少 3 倍 MAD
-    SPIKE_MEDIAN_RATIO = 1.5          # delta 至少是 median 的 1.5 倍
-    SPIKE_MAD = 2.0                   # 偏离至少 2 倍 MAD
+    LARGE_MEDIAN_RATIO = 3.0          # delta 至少是 median 的 3 倍
+    LARGE_MAD = 5.0                   # 偏离至少 5 倍 MAD
+    SPIKE_MEDIAN_RATIO = 2.0          # delta 至少是 median 的 2 倍
+    SPIKE_MAD = 3.0                   # 偏离至少 3 倍 MAD
     COLD_START_SPIKE_RATIO = 2.0      # 冷启动时，5秒成交量至少是历史均值的 2 倍
     PRICE_SURGE_60S = 1.0             # 1分钟内涨跌幅 ≥ 1% 独立触发
-    ABS_AMOUNT_BACKSTOP = 20_000_000  # 绝对金额兜底：5秒成交额 ≥ 2000万直接触发
-    ABS_AMOUNT_60S = 50_000_000       # 1分钟累计 ≥ 5000万确认大单
+    ABS_AMOUNT_BACKSTOP = 30_000_000  # 绝对金额兜底：5秒成交额 ≥ 3000万直接触发
+    ABS_AMOUNT_60S = 70_000_000       # 1分钟累计 ≥ 7000万确认大单
 
     # ── 滑窗参数 ──
     WINDOW_SIZE = 12     # 60 秒 / 5 秒间隔
