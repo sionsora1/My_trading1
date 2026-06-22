@@ -136,6 +136,36 @@ class TurnoverDetector:
         else:                             # >30亿: 大盘
             return 1.0
 
+    @staticmethod
+    def _trading_day_elapsed() -> float:
+        """返回当前已过交易时间的比例 (0.0 ~ 1.0)。
+
+        9:30→11:30 (120min) + 13:00→15:00 (120min) = 240分钟。
+        非交易时段返回 0.0。
+        """
+        from datetime import datetime, time
+        now = datetime.now()
+        if now.weekday() >= 5:
+            return 0.0  # 周末
+        t = now.time()
+        morning_start = time(9, 30)
+        morning_end = time(11, 30)
+        afternoon_start = time(13, 0)
+        afternoon_end = time(15, 0)
+
+        elapsed = 0
+        if t < morning_start:
+            return 0.0
+        if morning_start <= t <= morning_end:
+            elapsed = (now.hour * 60 + now.minute) - (9 * 60 + 30)
+        elif morning_end < t < afternoon_start:
+            elapsed = 120  # 午休期间已过完整上午
+        elif afternoon_start <= t <= afternoon_end:
+            elapsed = 120 + (now.hour * 60 + now.minute) - (13 * 60)
+        else:
+            return 1.0  # 收盘后
+        return max(0.0, min(1.0, elapsed / 240.0))
+
     def check(self, curr: Dict[str, QuoteSnapshot]) -> List[AnomalyAlert]:
         """检测换手率异动。
 
@@ -162,8 +192,9 @@ class TurnoverDetector:
             try:
 
                 # ── 日内换手率 (%) ──
-                # volume 为累计成交量（股），liutong 为流通股本（股）
-                daily_turnover = (snap.volume / liutong) * 100
+                # snap.volume 为 TDX 成交量（手），需 ×100 转股
+                # liutong 为流通股本（股）
+                daily_turnover = (snap.volume * 100 / liutong) * 100
 
                 # ── 维护 5 分钟滑窗 ──
                 if code not in self._five_min_windows:
@@ -193,7 +224,7 @@ class TurnoverDetector:
                     oldest_vol = window[0][1]
                     delta_5m_vol = snap.volume - oldest_vol
                     if delta_5m_vol > 0:
-                        delta_5m_turnover = (delta_5m_vol / liutong) * 100
+                        delta_5m_turnover = (delta_5m_vol * 100 / liutong) * 100
                         multiple_5m = (
                             delta_5m_turnover / five_min_median
                             if five_min_median > 0
@@ -231,8 +262,12 @@ class TurnoverDetector:
                 # 检测 2 & 3: 全天累计换手率 hot / extreme
                 # ============================================================
                 if daily_median > 0:
-                    daily_multiple = daily_turnover / daily_median
-                    if daily_turnover >= daily_median * self._daily_extreme_multiple:
+                    # 日内时间加权：当前应完成全天成交的 elapsed_ratio
+                    # 9:30→11:30 + 13:00→15:00 = 240分钟
+                    elapsed_ratio = self._trading_day_elapsed()
+                    adjusted_median = daily_median * elapsed_ratio if elapsed_ratio > 0 else daily_median
+                    daily_multiple = daily_turnover / adjusted_median if adjusted_median > 0 else 0.0
+                    if daily_turnover >= adjusted_median * self._daily_extreme_multiple:
                         if self._acquire_cooldown(code, 'extreme', now):
                             alerts.append(AnomalyAlert(
                                 type='turnover',
@@ -259,7 +294,7 @@ class TurnoverDetector:
                                     'multiple': round(daily_multiple, 1),
                                 }},
                             )
-                    elif daily_turnover >= daily_median * self._daily_hot_multiple:
+                    elif daily_turnover >= adjusted_median * self._daily_hot_multiple:
                         if self._acquire_cooldown(code, 'hot', now):
                             alerts.append(AnomalyAlert(
                                 type='turnover',

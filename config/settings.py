@@ -263,9 +263,9 @@ ANOMALY_DETECTOR_CONFIG = {
     # ── 换手率异动 ──
     'turnover': {
         'lookback_days': 30,           # 历史中位数天数
-        'five_min_multiple': 5,        # 5分钟增量倍率
-        'daily_hot_multiple': 3,       # 全天放量倍率
-        'daily_extreme_multiple': 5,   # 全天极端倍率
+        'five_min_multiple': 3,        # 5分钟增量倍率 (3x 5分钟历史中位数)
+        'daily_hot_multiple': 2,       # 全天放量倍率 (2x 日内时间加权中位数)
+        'daily_extreme_multiple': 3,   # 全天极端倍率 (3x 日内时间加权中位数)
     },
     # ── 涨跌停加速 ──
     'limit_move': {

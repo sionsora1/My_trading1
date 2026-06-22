@@ -214,8 +214,8 @@ class TDXQuotesPoller:
                     ask_vol3=float(q.get("ask_vol3", 0) or 0),
                     ask_vol4=float(q.get("ask_vol4", 0) or 0),
                     ask_vol5=float(q.get("ask_vol5", 0) or 0),
-                    active_buy=float(q.get("active1", 0) or 0),
-                    active_sell=float(q.get("active2", 0) or 0),
+                    active_buy=float(q.get("b_vol", 0) or 0),
+                    active_sell=float(q.get("s_vol", 0) or 0),
                     time=now_str,
                 )
                 results[code] = snapshot
@@ -668,7 +668,7 @@ class MonitorEngine:
         """加载异动检测器所需的换手率/逐笔/涨跌停缓存数据。"""
         try:
             liutong = self._load_liutongguben()
-            turnover_medians = self._compute_turnover_medians()
+            turnover_medians = self._compute_turnover_medians(liutong)
             self._turnover_detector.set_liutong_cache(liutong)
             self._turnover_detector.set_hist_medians(turnover_medians)
             # 同步共享给盘口检测器 (用于按股本分档)
@@ -686,11 +686,11 @@ class MonitorEngine:
             logger.warning(f"逐笔大单历史中位数加载失败 (分钟K线不可用，降级至绝对下限): {e}")
 
     def _load_liutongguben(self) -> Dict[str, float]:
-        """从 finance_detail 表加载流通股本 (float_shares)。"""
+        """从 finance_detail 表加载流通股本，无数据时从 market_cap 估算。"""
+        cache: Dict[str, float] = {}
         try:
             from data.database import SQLiteManager
             db = SQLiteManager()
-            cache: Dict[str, float] = {}
             for code in self._stock_pool:
                 ts_code = f"{code}.SH" if code.startswith(('6', '9')) else f"{code}.SZ"
                 row = db._conn.execute(
@@ -700,36 +700,71 @@ class MonitorEngine:
                 if row and row['float_shares'] and row['float_shares'] > 0:
                     cache[code] = float(row['float_shares'])
             db.close()
-            logger.info(f"流通股本缓存: {len(cache)}/{len(self._stock_pool)} 只")
-            return cache
         except Exception as e:
-            logger.warning(f"流通股本加载失败 (finance_detail 可能为空): {e}")
-            return {}
+            logger.warning(f"流通股本加载失败 (finance_detail): {e}")
 
-    def _compute_turnover_medians(self) -> Dict[str, dict]:
-        """从 daily_bars 计算近30日每只股票的日均换手率中位数和5分钟中位数。"""
+        # 回退: finance_detail 为空时，从 market_cap / 最新收盘价 × 0.7 估算流通股本
+        uncached = [c for c in self._stock_pool if c not in cache]
+        if uncached:
+            try:
+                from data.database import SQLiteManager
+                db = SQLiteManager()
+                for code in uncached:
+                    ts_code = f"{code}.SH" if code.startswith(('6', '9')) else f"{code}.SZ"
+                    row = db._conn.execute(
+                        "SELECT si.market_cap, db.close FROM stock_info si "
+                        "LEFT JOIN (SELECT ts_code, close FROM daily_bars "
+                        "WHERE ts_code=? ORDER BY trade_date DESC LIMIT 1) db "
+                        "ON si.ts_code = db.ts_code WHERE si.ts_code=?",
+                        (ts_code, ts_code),
+                    ).fetchone()
+                    if row and row['market_cap'] and row['close'] and row['market_cap'] > 0 and row['close'] > 0:
+                        total_shares = row['market_cap'] / row['close']
+                        cache[code] = total_shares * 0.7  # A股平均流通比例约70%
+                db.close()
+                logger.info(f"流通股本估算(从市值): {len(cache)} 只")
+            except Exception as e:
+                logger.warning(f"流通股本估算失败: {e}")
+
+        logger.info(f"流通股本缓存: {len(cache)}/{len(self._stock_pool)} 只")
+        return cache
+
+    def _compute_turnover_medians(self, liutong: Dict[str, float]) -> Dict[str, dict]:
+        """从 daily_bars 计算近30日每只股票的日均换手率(%)中位数和5分钟中位数。
+
+        需要流通股本将原始成交量转换为换手率百分比。
+        """
         try:
             import statistics
             from data.database import SQLiteManager
             db = SQLiteManager()
             medians: Dict[str, dict] = {}
             for code in self._stock_pool:
+                # 必须有流通股本才能计算换手率
+                lt = liutong.get(code)
+                if not lt or lt <= 0:
+                    continue
                 ts_code = f"{code}.SH" if code.startswith(('6', '9')) else f"{code}.SZ"
                 rows = db._conn.execute(
                     "SELECT volume FROM daily_bars WHERE ts_code=? ORDER BY trade_date DESC LIMIT 30",
                     (ts_code,),
                 ).fetchall()
-                vols = [r['volume'] for r in rows if r['volume'] and r['volume'] > 0]
-                if len(vols) >= 5:
-                    daily_median = statistics.median(vols)
-                    # 5分钟中位数 = 日均 / 48 (48个5分钟/交易日)
-                    five_min_median = daily_median / 48.0
+                # 每日换手率 = volume / liutong * 100 (%)
+                daily_pcts = [
+                    (r['volume'] / lt) * 100
+                    for r in rows
+                    if r['volume'] and r['volume'] > 0
+                ]
+                if len(daily_pcts) >= 5:
+                    daily_median_pct = statistics.median(daily_pcts)
+                    # 5分钟中位数 = 日均换手率 / 48 (48个5分钟/交易日)
+                    five_min_median_pct = daily_median_pct / 48.0
                     medians[code] = {
-                        'daily': daily_median,
-                        '5min': five_min_median,
+                        'daily': round(daily_median_pct, 4),
+                        '5min': round(five_min_median_pct, 6),
                     }
             db.close()
-            logger.info(f"换手率历史中位数: {len(medians)}/{len(self._stock_pool)} 只")
+            logger.info(f"换手率历史中位数(百分比): {len(medians)}/{len(self._stock_pool)} 只")
             return medians
         except Exception as e:
             logger.warning(f"换手率中位数计算失败: {e}")

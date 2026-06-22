@@ -318,7 +318,7 @@ class TDXDataSource(BaseDataSource):
                 # vol=成交量, amount=成交额
                 # bid1-5=买1-5价, ask1-5=卖1-5价
                 # bid_vol1-5=买1-5量, ask_vol1-5=卖1-5量
-                # active1=外盘, active2=内盘
+                # b_vol=外盘(主动买), s_vol=内盘(主动卖)
                 clean_code = code
                 name = q.get('name', '')
                 if not name:
@@ -354,8 +354,8 @@ class TDXDataSource(BaseDataSource):
                     'ask_vol3': float(q.get('ask_vol3', 0) or 0),
                     'ask_vol4': float(q.get('ask_vol4', 0) or 0),
                     'ask_vol5': float(q.get('ask_vol5', 0) or 0),
-                    'active1': float(q.get('active1', 0) or 0),  # 外盘
-                    'active2': float(q.get('active2', 0) or 0),  # 内盘
+                    'active_buy': float(q.get('b_vol', 0) or 0),   # 外盘(主动买)
+                    'active_sell': float(q.get('s_vol', 0) or 0),  # 内盘(主动卖)
                 }
             except Exception as e:
                 logger.debug(f'TDX实时行情失败 {code}: {e}')
