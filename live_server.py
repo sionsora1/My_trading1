@@ -112,12 +112,55 @@ class LiveTradingServer:
         self.fetcher = DataFetcher()
         self.cache = DataCache()
         self.data_cache_ttl = 300  # 行情数据缓存5分钟
+        # 日内反转盯盘
+        self._reversal_detector = None
+        self._reversal_alerts: list = []
+        self._init_reversal_watcher()
 
     def _init_signal_bus(self):
         """初始化信号总线"""
         from sigbus.bus import SignalBus
         from config.strategy_profiles import SIGNAL_BUS_CONFIG
         self.signal_bus = SignalBus(SIGNAL_BUS_CONFIG)
+
+    def _init_reversal_watcher(self):
+        """初始化日内反转盯盘检测器（1分钟K线，独立于SignalBus）"""
+        try:
+            from strategy.intraday_reversal import IntradayReversalStrategy
+            self._reversal_detector = IntradayReversalStrategy(
+                config={'period': '1'}, fetcher=self.fetcher
+            )
+            logger.info('日内反转盯盘已初始化 (1分钟K线)')
+        except Exception as e:
+            logger.warning(f'日内反转初始化失败: {e}')
+            self._reversal_detector = None
+
+    def _fetch_minute_bars_batch(self, stock_pool: list) -> dict:
+        """批量预取分钟K线（1分钟周期，今天全天）。
+
+        Args:
+            stock_pool: 股票代码列表
+
+        Returns:
+            {code: bars_list} 或 {}
+        """
+        if not self._reversal_detector:
+            return {}
+        today = datetime.now()
+        start_time = today.strftime('%Y-%m-%d') + ' 09:00:00'
+        end_time = today.strftime('%Y-%m-%d') + ' 15:30:00'
+        result = {}
+        for code in stock_pool:
+            try:
+                bars = self.fetcher.get_minute_data(
+                    ts_code=code, period='1',
+                    start_time=start_time, end_time=end_time,
+                )
+                if bars is not None and len(bars) >= 20:
+                    result[code] = bars
+            except Exception:
+                continue
+        return result
 
     def _get_active_strategies(self, regime=None):
         """根据市场环境获取当前应激活的策略实例列表"""
@@ -217,6 +260,10 @@ class LiveTradingServer:
     def get_signal_history(self) -> list:
         """获取信号历史"""
         return self.notifier.get_all_signals()
+
+    def get_reversal_alerts(self) -> list:
+        """获取最新一轮日内反转盯盘告警（V底/A顶）"""
+        return self._reversal_alerts if hasattr(self, '_reversal_alerts') else []
 
     # ============================================================
     # 交易操作
@@ -829,6 +876,25 @@ class LiveTradingServer:
                 for s in deduped_signals
             ]
             self.checklist.generate(checklist_data, account_dict)
+
+            # 5.5 日内反转盯盘（独立于SignalBus，纯告警）
+            try:
+                if self._reversal_detector and is_trading_time()[0]:
+                    minute_bars = self._fetch_minute_bars_batch(stock_pool)
+                    if minute_bars:
+                        reversal_alerts = self._reversal_detector.detect_reversals(minute_bars)
+                        # 补全名称
+                        for a in reversal_alerts:
+                            stock_info = latest_data.get(a['code'], {})
+                            a['name'] = stock_info.get('name', a['code'])
+                        if reversal_alerts:
+                            self._reversal_alerts = reversal_alerts
+                            logger.info('日内反转信号', extra={'data': {
+                                'count': len(reversal_alerts),
+                                'alerts': [{k: a[k] for k in ('code', 'name', 'type', 'price')} for a in reversal_alerts],
+                            }})
+            except Exception as e:
+                logger.warning(f'日内反转检测异常: {e}')
 
             # 6. 打印信号
             if self.config.get('notify', {}).get('console_print', True):

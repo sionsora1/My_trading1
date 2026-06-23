@@ -29,7 +29,7 @@ class IntradayReversalStrategy(BaseStrategy):
         super().__init__(config)
         self.max_single_weight: float = float(
             self.config.get('max_single_weight', 0.10))
-        self.period: str = str(self.config.get('period', '5'))
+        self.period: str = str(self.config.get('period', '1'))  # 默认1分钟K线
         self._fetcher = fetcher  # 注入 DataFetcher，避免每次独立连接 TDX
 
     # ------------------------------------------------------------------
@@ -201,7 +201,59 @@ class IntradayReversalStrategy(BaseStrategy):
         return self._minutes_since_open(last_time) >= 30
 
     # ------------------------------------------------------------------
-    # Signal generation
+    # 独立盯盘检测（批量预取分钟线 + SSE 告警）
+    # ------------------------------------------------------------------
+
+    def detect_reversals(self, minute_bars_map: dict) -> List[dict]:
+        """用预取的分钟线检测 V底/A顶，返回告警 dict 列表。
+
+        Args:
+            minute_bars_map: {code: bars_df_or_list} 批量预取的分钟K线
+
+        Returns:
+            [{'code': str, 'type': 'v_reversal'|'a_reversal',
+              'name': str, 'price': float, 'time': str}, ...]
+        """
+        alerts: List[dict] = []
+        for code, bars in minute_bars_map.items():
+            try:
+                if bars is None or len(bars) < 20:
+                    continue
+                if not self._after_first_30_min(bars):
+                    continue
+
+                if self._detect_v_reversal(bars):
+                    last_close = self._last_price(bars)
+                    alerts.append({
+                        'code': code, 'type': 'v_reversal',
+                        'name': '', 'price': last_close,
+                        'time': self._last_time(bars),
+                    })
+                elif self._detect_a_reversal(bars):
+                    last_close = self._last_price(bars)
+                    alerts.append({
+                        'code': code, 'type': 'a_reversal',
+                        'name': '', 'price': last_close,
+                        'time': self._last_time(bars),
+                    })
+            except Exception:
+                continue
+        return alerts
+
+    @staticmethod
+    def _last_price(bars):
+        if hasattr(bars, 'iloc'):
+            return float(bars['close'].iloc[-1])
+        return float(bars[-1].get('close', 0))
+
+    @staticmethod
+    def _last_time(bars):
+        if hasattr(bars, 'iloc'):
+            return str(bars['trade_time'].iloc[-1])
+        return str(bars[-1].get('trade_time', ''))
+
+    # ------------------------------------------------------------------
+    # Signal generation (兼容 SignalBus)
     # ------------------------------------------------------------------
 
     def generate_signals(self, date: str, market_data: dict,
