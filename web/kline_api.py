@@ -924,6 +924,98 @@ def get_reversal_signals(
     }
 
 
+# ============================================================
+# 线性回归通道 (Regression Channel) — 日线趋势通道
+# ============================================================
+
+@router.get("/regression/{code}")
+def get_regression_channel(
+    code: str,
+    start_date: str = Query(default='20240101'),
+    end_date: str = Query(default='20251231'),
+    window: int = Query(default=20, description='回归窗口大小'),
+    sigma: float = Query(default=2.0, description='通道宽度(标准差倍数)'),
+):
+    """计算日线线性回归通道（中线+上下轨）。"""
+    db = SQLiteManager()
+    ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+
+    info = db.get_stock_info(ts_code)
+    if not info:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"股票 {code} 不在数据库中")
+
+    bars = db.get_daily_bars(ts_code, start_date, end_date)
+    db.close()
+
+    if len(bars) < window:
+        return {'code': code, 'name': info.get('name', code),
+                'bars': [], 'error': f'数据不足 ({len(bars)} < {window})'}
+
+    import math
+    closes = [b['close'] for b in bars]
+    dates = [b['trade_date'] for b in bars]
+
+    midline = []
+    upper = []
+    lower = []
+    slope_series = []  # 每点的斜率
+
+    for i in range(len(closes)):
+        if i < window - 1:
+            midline.append(None)
+            upper.append(None)
+            lower.append(None)
+            slope_series.append(None)
+            continue
+
+        # 取最近 window 根 K 线做线性回归
+        y = closes[i - window + 1 : i + 1]
+        x = list(range(window))
+        n = window
+
+        sum_x = sum(x)
+        sum_y = sum(y)
+        sum_xy = sum(x[j] * y[j] for j in range(n))
+        sum_x2 = sum(x[j] * x[j] for j in range(n))
+
+        slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x) if (n * sum_x2 - sum_x * sum_x) != 0 else 0
+        intercept = (sum_y - slope * sum_x) / n
+
+        # 回归线上的值
+        y_pred = [slope * x[j] + intercept for j in range(n)]
+
+        # 标准差
+        residuals = [y[j] - y_pred[j] for j in range(n)]
+        std = math.sqrt(sum(r * r for r in residuals) / n)
+
+        # 最后一点的通道值
+        last_pred = slope * (n - 1) + intercept
+        midline.append(round(last_pred, 2))
+        upper.append(round(last_pred + sigma * std, 2))
+        lower.append(round(last_pred - sigma * std, 2))
+        slope_series.append(round(slope, 4))
+
+    # 通道方向
+    last_slope = slope_series[-1] if slope_series and slope_series[-1] is not None else 0
+    direction = 'up' if last_slope > 0.01 else 'down' if last_slope < -0.01 else 'flat'
+    last_upper = [v for v in upper if v is not None]
+    last_lower = [v for v in lower if v is not None]
+    width_pct = round((last_upper[-1] - last_lower[-1]) / closes[-1] * 100, 1) if last_upper and last_lower else 0
+
+    return {
+        'code': code, 'name': info.get('name', code),
+        'window': window, 'sigma': sigma,
+        'direction': direction,
+        'width_pct': width_pct,
+        'bars': [
+            {'date': dates[i], 'close': closes[i],
+             'midline': midline[i], 'upper': upper[i], 'lower': lower[i]}
+            for i in range(len(closes))
+        ],
+    }
+
+
 class StrategyRequest(BaseModel):
     code: str
     strategy: str = 'momentum'  # 'momentum' | 'trend_following'
