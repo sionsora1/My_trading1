@@ -114,6 +114,11 @@ class DataSyncService:
                             'amount': float(row.get('amount', 0) or 0),
                             'turnover': float(row.get('turnover', 0) or 0),
                             'pct_chg': float(row.get('pct_chg', 0) or 0),
+                            'ma5': None, 'ma10': None, 'ma20': None,
+                            'ma60': None, 'volume_ma20': None,
+                            'return_1d': None, 'return_5d': None,
+                            'return_20d': None, 'return_60d': None,
+                            'volatility': None,
                         })
                     if rows:
                         self.db.upsert_daily_bars(rows)

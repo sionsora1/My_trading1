@@ -103,6 +103,7 @@ class SQLiteManager:
                 low         REAL,
                 close       REAL,
                 volume      REAL,
+                amount      REAL,
                 PRIMARY KEY (ts_code, trade_time, period)
             );
 
@@ -261,7 +262,15 @@ class SQLiteManager:
                 try:
                     self._conn.execute(f'ALTER TABLE daily_bars ADD COLUMN {col} REAL')
                 except Exception:
-                    pass  # column already exists (race)
+                    pass
+
+        # minute_bars: add amount column if missing
+        min_existing = {r[1] for r in self._conn.execute('PRAGMA table_info(minute_bars)')}
+        if 'amount' not in min_existing:
+            try:
+                self._conn.execute('ALTER TABLE minute_bars ADD COLUMN amount REAL')
+            except Exception:
+                pass
 
     def compute_all_derived_indicators(self, codes: list[str] = None) -> dict:
         """Compute derived indicators for all or specified stocks.
