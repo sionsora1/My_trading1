@@ -452,12 +452,42 @@ web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 app.mount("/static", StaticFiles(directory=web_dir), name="static")
 
 
+def sync_kline_to_latest():
+    """启动时自动同步日线+分钟线到最新交易日，含衍生指标计算。"""
+    try:
+        from datetime import datetime, timedelta
+        latest_date = db._conn.execute('SELECT MAX(trade_date) FROM daily_bars').fetchone()[0]
+        today = datetime.now().strftime('%Y%m%d')
+        if not latest_date or latest_date < today:
+            start = (datetime.strptime(latest_date, '%Y%m%d') + timedelta(days=1)).strftime('%Y%m%d') if latest_date else '20240101'
+            codes = [r['ts_code'] for r in db._conn.execute('SELECT ts_code FROM stock_info').fetchall()]
+            logger.info(f'[Startup] K线同步: {start} → {today}, {len(codes)} 只')
+            svc = DataSyncService(db, fetcher._primary)
+            result = svc.sync_daily_bars(codes, start, today)
+            logger.info(f'[Startup] 日线: {result}')
+            db.compute_all_derived_indicators(codes)
+        # 分钟线: 只同步今天
+        today_count = db._conn.execute(
+            "SELECT COUNT(*) FROM minute_bars WHERE trade_time LIKE ?",
+            (f'{today[:4]}-{today[4:6]}-{today[6:8]}%',)
+        ).fetchone()[0]
+        if today_count == 0:
+            codes = [r['ts_code'] for r in db._conn.execute('SELECT ts_code FROM stock_info').fetchall()]
+            svc = DataSyncService(db, fetcher._primary)
+            svc.sync_minute_bars(codes, today, period='1')
+            logger.info(f'[Startup] 分钟线已同步: {today}')
+    except Exception as e:
+        logger.warning(f'[Startup] K线同步失败: {e}')
+
+
 @app.on_event("startup")
 async def startup_event():
     """在 uvicorn 启动后设置事件循环，供 MonitorEngine / MarketWatcherEngine 跨线程 SSE 推送使用"""
     MonitorEngine.get_instance().set_event_loop(asyncio.get_running_loop())
     from broker.market_watcher import MarketWatcherEngine
     MarketWatcherEngine.get_instance().set_event_loop(asyncio.get_running_loop())
+    # 启动时自动同步 K 线到最新
+    await asyncio.to_thread(sync_kline_to_latest)
 
 
 @app.get("/", response_class=HTMLResponse)
