@@ -312,6 +312,14 @@ body {
         </div>
 
         <div class="control-group">
+            <label>周期</label>
+            <div class="strategy-btns" id="periodBtns">
+                <button class="strategy-btn active" data-period="daily">日线</button>
+                <button class="strategy-btn" data-period="1min">1分钟K</button>
+            </div>
+        </div>
+
+        <div class="control-group" id="dailyStrategyGroup">
             <label>策略</label>
             <div class="strategy-btns" id="strategyBtns">
                 <button class="strategy-btn active" data-strategy="momentum">🚀 动量</button>
@@ -406,6 +414,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadStockList();
     setupStockSearch();
     setupStrategyButtons();
+    setupPeriodButtons();
 });
 
 // ============================================================
@@ -488,19 +497,38 @@ function selectStock(stock) {
 }
 
 // ============================================================
-// Strategy buttons
+// Period & Strategy buttons
 // ============================================================
+function setupPeriodButtons() {
+    document.getElementById('periodBtns').addEventListener('click', (e) => {
+        if (e.target.classList.contains('strategy-btn')) {
+            document.querySelectorAll('#periodBtns .strategy-btn').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            const isMinute = e.target.dataset.period === '1min';
+            document.getElementById('dailyStrategyGroup').style.display = isMinute ? 'none' : '';
+            document.getElementById('startDate').style.display = isMinute ? 'none' : '';
+            document.getElementById('endDate').style.display = isMinute ? 'none' : '';
+            document.querySelector('#startDate').closest('.control-group').style.display = isMinute ? 'none' : '';
+        }
+    });
+}
+
+function getSelectedPeriod() {
+    const active = document.querySelector('#periodBtns .strategy-btn.active');
+    return active ? active.dataset.period : 'daily';
+}
+
 function setupStrategyButtons() {
     document.getElementById('strategyBtns').addEventListener('click', (e) => {
         if (e.target.classList.contains('strategy-btn')) {
-            document.querySelectorAll('.strategy-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('#strategyBtns .strategy-btn').forEach(b => b.classList.remove('active'));
             e.target.classList.add('active');
         }
     });
 }
 
 function getSelectedStrategy() {
-    const active = document.querySelector('.strategy-btn.active');
+    const active = document.querySelector('#strategyBtns .strategy-btn.active');
     return active ? active.dataset.strategy : 'momentum';
 }
 
@@ -513,9 +541,9 @@ async function runAnalysis() {
         return;
     }
 
-    const strategy = getSelectedStrategy();
+    const period = getSelectedPeriod();
     const startDate = document.getElementById('startDate').value.trim() || '20240101';
-    const endDate = document.getElementById('endDate').value.trim() || '20260612';
+    const endDate = document.getElementById('endDate').value.trim() || '20260623';
 
     const btn = document.getElementById('runBtn');
     btn.disabled = true;
@@ -525,26 +553,45 @@ async function runAnalysis() {
         '<div class="loading">⏳ 正在加载数据并运行策略...</div>';
 
     try {
-        const resp = await fetch('/api/kline/strategy', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                code: selectedStock.code,
-                strategy: strategy,
-                start_date: startDate,
-                end_date: endDate,
-            }),
-        });
+        let resp, result;
 
-        if (!resp.ok) {
-            const err = await resp.json();
-            throw new Error(err.detail || '请求失败');
+        if (period === '1min') {
+            // 日内反转: 分钟K线 + V/A检测
+            resp = await fetch(`/api/kline/minute/reversal/${selectedStock.code}`);
+            result = await resp.json();
+            if (result.error) { showToast(result.error); return; }
+            result.strategy_name = '日内反转';
+            // 转换数据格式兼容 renderChart
+            result.bars = result.bars.map(b => ({ ...b, date: b.time }));
+            result.signals = result.signals.map(s => ({
+                signal: s.type === 'v_reversal' ? 'V底' : 'A顶',
+                date: s.time, price: s.price,
+                reason: s.type === 'v_reversal' ? 'V型底反转' : 'A型顶反转',
+            }));
+            renderMinuteChart(result);
+        } else {
+            const strategy = getSelectedStrategy();
+            resp = await fetch('/api/kline/strategy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    code: selectedStock.code,
+                    strategy: strategy,
+                    start_date: startDate,
+                    end_date: endDate,
+                }),
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || '请求失败');
+            }
+
+            const dailyResult = await resp.json();
+            renderChart(dailyResult);
+            renderMetrics(dailyResult.metrics);
+            renderTrades(dailyResult.trades);
         }
-
-        currentResult = await resp.json();
-        renderChart(currentResult);
-        renderMetrics(currentResult.metrics);
-        renderTrades(currentResult.trades);
     } catch (e) {
         showToast('分析失败: ' + e.message);
         document.getElementById('chartContainer').innerHTML =
@@ -553,6 +600,97 @@ async function runAnalysis() {
         btn.disabled = false;
         btn.textContent = '▶ 运行分析';
     }
+}
+
+// ============================================================
+// Render 1-minute candlestick chart with reversal signals
+// ============================================================
+function renderMinuteChart(result) {
+    const bars = result.bars;
+    const signals = result.signals;
+    const name = result.name || result.code;
+
+    if (!bars || bars.length === 0) {
+        document.getElementById('chartContainer').innerHTML =
+            '<div class="loading">无分钟K线数据</div>';
+        return;
+    }
+
+    const times = bars.map(b => b.time || b.date);
+    const opens = bars.map(b => b.open);
+    const highs = bars.map(b => b.high);
+    const lows = bars.map(b => b.low);
+    const closes = bars.map(b => b.close);
+    const volumes = bars.map(b => b.volume);
+
+    const traces = [];
+
+    // Candlestick
+    traces.push({
+        type: 'candlestick', x: times, name: name,
+        open: opens, high: highs, low: lows, close: closes,
+        xaxis: 'x', yaxis: 'y',
+        increasing: { line: { color: '#ef4444', width: 1 }, fillcolor: '#ef4444' },
+        decreasing: { line: { color: '#22c55e', width: 1 }, fillcolor: '#22c55e' },
+    });
+
+    // Volume bars
+    const volColors = volumes.map((v, i) => i > 0 && closes[i] >= closes[i-1] ? '#ef4444' : '#22c55e');
+    traces.push({
+        type: 'bar', x: times, y: volumes, name: '成交量',
+        marker: { color: volColors, opacity: 0.4 },
+        xaxis: 'x', yaxis: 'y2',
+    });
+
+    // V-bottom markers
+    const vSignals = signals.filter(s => s.signal === 'V底');
+    if (vSignals.length > 0) {
+        traces.push({
+            type: 'scatter', mode: 'markers+text',
+            x: vSignals.map(s => s.date), y: vSignals.map(s => s.price),
+            name: 'V底买点',
+            marker: { symbol: 'triangle-up', size: 14, color: '#22c55e', line: { width: 2, color: '#fff' } },
+            text: vSignals.map(() => 'V'), textposition: 'top center',
+            textfont: { size: 10, color: '#22c55e', family: 'Arial Black' },
+        });
+    }
+
+    // A-top markers
+    const aSignals = signals.filter(s => s.signal === 'A顶');
+    if (aSignals.length > 0) {
+        traces.push({
+            type: 'scatter', mode: 'markers+text',
+            x: aSignals.map(s => s.date), y: aSignals.map(s => s.price),
+            name: 'A顶卖点',
+            marker: { symbol: 'triangle-down', size: 14, color: '#ef4444', line: { width: 2, color: '#fff' } },
+            text: aSignals.map(() => 'A'), textposition: 'bottom center',
+            textfont: { size: 10, color: '#ef4444', family: 'Arial Black' },
+        });
+    }
+
+    const layout = {
+        title: {
+            text: `${name} (${result.code}) — 1分钟K线 · 日内反转${signals.length > 0 ? ' · ' + signals.map(s => s.signal).join(',') : ' · 无信号'}`,
+            font: { size: 16, color: '#e2e8f0' },
+        },
+        paper_bgcolor: '#0f172a', plot_bgcolor: '#0f172a',
+        xaxis: { type: 'category', tickangle: -45, tickfont: { size: 9, color: '#94a3b8' },
+            rangeslider: { visible: false }, nticks: 30,
+            gridcolor: 'rgba(71,85,105,0.15)' },
+        yaxis: { title: '价格', side: 'right', tickfont: { color: '#e2e8f0' },
+            gridcolor: 'rgba(71,85,105,0.2)' },
+        yaxis2: { title: '成交量(手)', overlaying: 'y', side: 'left', showgrid: false,
+            tickfont: { color: '#94a3b8' }, range: [0, Math.max(...volumes) * 4] },
+        showlegend: true,
+        legend: { x: 0.01, y: 0.99, font: { color: '#e2e8f0', size: 11 },
+            bgcolor: 'rgba(30,41,59,0.8)' },
+        margin: { l: 60, r: 60, t: 60, b: 80 },
+        height: 650,
+    };
+
+    Plotly.newPlot('chartContainer', traces, layout, { responsive: true, displayModeBar: true,
+        modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d'],
+        displaylogo: false });
 }
 
 // ============================================================
