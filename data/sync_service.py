@@ -130,6 +130,17 @@ class DataSyncService:
 
         result = {'synced': synced, 'failed': failed, 'total_bars': total_bars}
         logger.info(f'日线同步完成: {result}')
+
+        # ── 同步后自动计算衍生指标 ──
+        if total_bars > 0:
+            try:
+                indicator_result = self.db.compute_all_derived_indicators(codes)
+                result['indicator_updated'] = indicator_result['updated_stocks']
+                result['indicator_rows'] = indicator_result['updated_rows']
+                logger.info(f'衍生指标更新: {indicator_result}')
+            except Exception as e:
+                logger.warning(f'衍生指标计算失败: {e}')
+
         return result
 
     # ------------------------------------------------------------------

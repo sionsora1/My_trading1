@@ -305,61 +305,67 @@ class TDXDataSource(BaseDataSource):
 
         _load_name_cache()
         results = {}
-        for ts_code in codes:
-            market, code = self._parse_code(ts_code)
+
+        # ── 批量获取：一次请求拉多只股票（每批最多 20 只） ──
+        BATCH_SIZE = 20
+        for batch_start in range(0, len(codes), BATCH_SIZE):
+            batch_codes = codes[batch_start:batch_start + BATCH_SIZE]
+            queries = []
+            code_map = {}  # (market, raw_code) → clean_code
+            for ts_code in batch_codes:
+                market, code = self._parse_code(ts_code)
+                queries.append((market, code))
+                code_map[(market, code)] = code
+
             try:
-                quotes = self._api.get_security_quotes([(market, code)])
+                quotes = self._api.get_security_quotes(queries)
                 if not quotes:
                     continue
 
-                q = quotes[0]
-                # Map fields from pytdx:
-                # price=最新价, open=开盘价, high=最高价, low=最低价,
-                # vol=成交量, amount=成交额
-                # bid1-5=买1-5价, ask1-5=卖1-5价
-                # bid_vol1-5=买1-5量, ask_vol1-5=卖1-5量
-                # b_vol=外盘(主动买), s_vol=内盘(主动卖)
-                clean_code = code
-                name = q.get('name', '')
-                if not name:
-                    name = _name_cache.get(clean_code, clean_code)
-                else:
-                    name = self._safe_decode(name)
-                results[clean_code] = {
-                    'ts_code': clean_code,
-                    'name': name,
-                    'close': float(q.get('price', 0) or 0),
-                    'open': float(q.get('open', 0) or 0),
-                    'high': float(q.get('high', 0) or 0),
-                    'low': float(q.get('low', 0) or 0),
-                    'volume': float(q.get('vol', 0) or 0),
-                    'amount': float(q.get('amount', 0) or 0),
-                    'bid1': float(q.get('bid1', 0) or 0),
-                    'bid2': float(q.get('bid2', 0) or 0),
-                    'bid3': float(q.get('bid3', 0) or 0),
-                    'bid4': float(q.get('bid4', 0) or 0),
-                    'bid5': float(q.get('bid5', 0) or 0),
-                    'bid_vol1': float(q.get('bid_vol1', 0) or 0),
-                    'bid_vol2': float(q.get('bid_vol2', 0) or 0),
-                    'bid_vol3': float(q.get('bid_vol3', 0) or 0),
-                    'bid_vol4': float(q.get('bid_vol4', 0) or 0),
-                    'bid_vol5': float(q.get('bid_vol5', 0) or 0),
-                    'ask1': float(q.get('ask1', 0) or 0),
-                    'ask2': float(q.get('ask2', 0) or 0),
-                    'ask3': float(q.get('ask3', 0) or 0),
-                    'ask4': float(q.get('ask4', 0) or 0),
-                    'ask5': float(q.get('ask5', 0) or 0),
-                    'ask_vol1': float(q.get('ask_vol1', 0) or 0),
-                    'ask_vol2': float(q.get('ask_vol2', 0) or 0),
-                    'ask_vol3': float(q.get('ask_vol3', 0) or 0),
-                    'ask_vol4': float(q.get('ask_vol4', 0) or 0),
-                    'ask_vol5': float(q.get('ask_vol5', 0) or 0),
-                    'active_buy': float(q.get('b_vol', 0) or 0),   # 外盘(主动买)
-                    'active_sell': float(q.get('s_vol', 0) or 0),  # 内盘(主动卖)
-                }
+                for q in quotes:
+                    mkt = q.get('market', 0)
+                    raw_code = q.get('code', '')
+                    clean_code = code_map.get((mkt, raw_code), raw_code)
+
+                    name = q.get('name', '')
+                    if not name:
+                        name = _name_cache.get(clean_code, clean_code)
+                    else:
+                        name = self._safe_decode(name)
+                    results[clean_code] = {
+                        'ts_code': clean_code,
+                        'name': name,
+                        'close': float(q.get('price', 0) or 0),
+                        'open': float(q.get('open', 0) or 0),
+                        'high': float(q.get('high', 0) or 0),
+                        'low': float(q.get('low', 0) or 0),
+                        'volume': float(q.get('vol', 0) or 0),
+                        'amount': float(q.get('amount', 0) or 0),
+                        'bid1': float(q.get('bid1', 0) or 0),
+                        'bid2': float(q.get('bid2', 0) or 0),
+                        'bid3': float(q.get('bid3', 0) or 0),
+                        'bid4': float(q.get('bid4', 0) or 0),
+                        'bid5': float(q.get('bid5', 0) or 0),
+                        'bid_vol1': float(q.get('bid_vol1', 0) or 0),
+                        'bid_vol2': float(q.get('bid_vol2', 0) or 0),
+                        'bid_vol3': float(q.get('bid_vol3', 0) or 0),
+                        'bid_vol4': float(q.get('bid_vol4', 0) or 0),
+                        'bid_vol5': float(q.get('bid_vol5', 0) or 0),
+                        'ask1': float(q.get('ask1', 0) or 0),
+                        'ask2': float(q.get('ask2', 0) or 0),
+                        'ask3': float(q.get('ask3', 0) or 0),
+                        'ask4': float(q.get('ask4', 0) or 0),
+                        'ask5': float(q.get('ask5', 0) or 0),
+                        'ask_vol1': float(q.get('ask_vol1', 0) or 0),
+                        'ask_vol2': float(q.get('ask_vol2', 0) or 0),
+                        'ask_vol3': float(q.get('ask_vol3', 0) or 0),
+                        'ask_vol4': float(q.get('ask_vol4', 0) or 0),
+                        'ask_vol5': float(q.get('ask_vol5', 0) or 0),
+                        'active_buy': float(q.get('b_vol', 0) or 0),
+                        'active_sell': float(q.get('s_vol', 0) or 0),
+                    }
             except Exception as e:
-                logger.debug(f'TDX实时行情失败 {code}: {e}')
-                continue
+                logger.debug(f'TDX批量行情失败: {e}')
 
         self._disconnect()
         return results

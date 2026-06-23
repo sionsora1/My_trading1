@@ -46,6 +46,7 @@ class SQLiteManager:
         self._conn.execute("PRAGMA foreign_keys=ON;")
         self._create_tables()
         self._create_indexes()
+        self._migrate_derived_columns()
 
     # ------------------------------------------------------------------
     # Connection helper
@@ -80,6 +81,16 @@ class SQLiteManager:
                 amount      REAL,
                 turnover    REAL,
                 pct_chg     REAL,
+                ma5         REAL,
+                ma10        REAL,
+                ma20        REAL,
+                ma60        REAL,
+                volume_ma20 REAL,
+                return_1d   REAL,
+                return_5d   REAL,
+                return_20d  REAL,
+                return_60d  REAL,
+                volatility  REAL,
                 PRIMARY KEY (ts_code, trade_date)
             );
 
@@ -238,6 +249,50 @@ class SQLiteManager:
             """
         )
 
+    def _migrate_derived_columns(self):
+        """Add derived-indicator columns if they don't exist (v2.5 schema upgrade)."""
+        derived_cols = [
+            'ma5', 'ma10', 'ma20', 'ma60', 'volume_ma20',
+            'return_1d', 'return_5d', 'return_20d', 'return_60d', 'volatility',
+        ]
+        existing = {r[1] for r in self._conn.execute('PRAGMA table_info(daily_bars)')}
+        for col in derived_cols:
+            if col not in existing:
+                try:
+                    self._conn.execute(f'ALTER TABLE daily_bars ADD COLUMN {col} REAL')
+                except Exception:
+                    pass  # column already exists (race)
+
+    def compute_all_derived_indicators(self, codes: list[str] = None) -> dict:
+        """Compute derived indicators for all or specified stocks.
+
+        Args:
+            codes: List of ts_codes (like '600519.SH'); None = all in stock_info.
+
+        Returns:
+            {'updated_stocks': N, 'updated_rows': N}
+        """
+        if codes is None:
+            rows = self._conn.execute('SELECT ts_code FROM stock_info').fetchall()
+            codes = [r['ts_code'] for r in rows]
+
+        total_rows = 0
+        updated = 0
+        for i, ts_code in enumerate(codes):
+            try:
+                n = self.compute_derived_indicators(ts_code)
+                total_rows += n
+                if n > 0:
+                    updated += 1
+            except Exception:
+                pass
+            if (i + 1) % 20 == 0:
+                from utils.logger import get_logger
+                get_logger('data', 'data.log').info(
+                    f'指标计算进度: {i + 1}/{len(codes)}'
+                )
+        return {'updated_stocks': updated, 'updated_rows': total_rows}
+
     def _create_indexes(self):
         """Create indexes on frequently-queried columns."""
         self._conn.executescript(
@@ -276,18 +331,15 @@ class SQLiteManager:
     def upsert_daily_bars(self, rows: list[dict]):
         """Insert or replace a batch of daily bar rows.
 
-        Each row dict must contain keys matching the daily_bars columns:
-        ts_code, trade_date, open, high, low, close, volume, amount,
-        turnover, pct_chg.
+        Each row dict must contain keys matching the daily_bars columns.
+        Derived fields (ma5..volatility) are written if present.
         """
-        sql = """
-            INSERT OR REPLACE INTO daily_bars
-                (ts_code, trade_date, open, high, low, close,
-                 volume, amount, turnover, pct_chg)
-            VALUES
-                (:ts_code, :trade_date, :open, :high, :low, :close,
-                 :volume, :amount, :turnover, :pct_chg)
-        """
+        cols = ['ts_code', 'trade_date', 'open', 'high', 'low', 'close',
+                'volume', 'amount', 'turnover', 'pct_chg',
+                'ma5', 'ma10', 'ma20', 'ma60', 'volume_ma20',
+                'return_1d', 'return_5d', 'return_20d', 'return_60d', 'volatility']
+        placeholders = [f':{c}' for c in cols]
+        sql = f"INSERT OR REPLACE INTO daily_bars ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
         with self._transaction() as conn:
             conn.executemany(sql, rows)
 
@@ -297,13 +349,75 @@ class SQLiteManager:
         """
         sql = """
             SELECT ts_code, trade_date, open, high, low, close,
-                   volume, amount, turnover, pct_chg
+                   volume, amount, turnover, pct_chg,
+                   ma5, ma10, ma20, ma60, volume_ma20,
+                   return_1d, return_5d, return_20d, return_60d, volatility
             FROM daily_bars
             WHERE ts_code = ? AND trade_date >= ? AND trade_date <= ?
             ORDER BY trade_date ASC
         """
         cur = self._conn.execute(sql, (ts_code, start_date, end_date))
         return [dict(row) for row in cur.fetchall()]
+
+    def compute_derived_indicators(self, ts_code: str) -> int:
+        """Compute MA/return/volatility for one stock and UPDATE daily_bars.
+
+        Uses pandas to calculate windowed indicators over the full history,
+        then writes them back to the DB.  Existing non-NULL values are skipped
+        to avoid recomputation on every sync.
+
+        Returns:
+            Number of rows updated.
+        """
+        import pandas as pd
+
+        bars = self.get_daily_bars(ts_code, '20000101', '20991231')
+        if len(bars) < 5:
+            return 0
+
+        df = pd.DataFrame(bars)
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        close = df['close']
+        volume = df['volume'] if 'volume' in df.columns else close * 100
+
+        df['_ma5'] = close.rolling(5, min_periods=1).mean()
+        df['_ma10'] = close.rolling(10, min_periods=1).mean()
+        df['_ma20'] = close.rolling(20, min_periods=1).mean()
+        df['_ma60'] = close.rolling(60, min_periods=1).mean()
+        df['_volume_ma20'] = volume.rolling(20, min_periods=1).mean()
+        df['_return_1d'] = close.pct_change(1)
+        df['_return_5d'] = close.pct_change(5)
+        df['_return_20d'] = close.pct_change(20)
+        df['_return_60d'] = close.pct_change(60)
+        ret = close.pct_change()
+        df['_volatility'] = ret.rolling(20, min_periods=5).std()
+
+        updated = 0
+        with self._transaction() as conn:
+            for _, row in df.iterrows():
+                # Only update rows where derived fields are NULL
+                existing = row.to_dict()
+                if existing.get('ma5') is not None:
+                    continue
+                conn.execute(
+                    """UPDATE daily_bars SET ma5=?, ma10=?, ma20=?, ma60=?,
+                       volume_ma20=?, return_1d=?, return_5d=?, return_20d=?,
+                       return_60d=?, volatility=?
+                       WHERE ts_code=? AND trade_date=?""",
+                    (
+                        row.get('_ma5'), row.get('_ma10'), row.get('_ma20'),
+                        row.get('_ma60'), row.get('_volume_ma20'),
+                        row.get('_return_1d'), row.get('_return_5d'),
+                        row.get('_return_20d'), row.get('_return_60d'),
+                        row.get('_volatility'),
+                        row['ts_code'], row['trade_date'],
+                    ),
+                )
+                updated += 1
+        return updated
 
     def get_latest_trade_date(self, ts_code: str) -> str | None:
         """Return the most recent trade_date for *ts_code*, or None."""

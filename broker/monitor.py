@@ -171,54 +171,61 @@ class TDXQuotesPoller:
 
         results: Dict[str, QuoteSnapshot] = {}
         now_str = datetime.now().strftime("%H:%M:%S")
-        for code in codes:
-            market = 1 if code.startswith("6") else 0
+
+        # ── 批量获取：一次请求拉多只股票（每批最多 20 只）──
+        BATCH_SIZE = 20
+        for batch_start in range(0, len(codes), BATCH_SIZE):
+            batch_codes = codes[batch_start:batch_start + BATCH_SIZE]
+            queries = [(1 if c.startswith("6") else 0, c) for c in batch_codes]
             try:
-                quotes = api.get_security_quotes([(market, code)])
+                quotes = api.get_security_quotes(queries)
                 if not quotes:
                     continue
-                q = quotes[0]
-                price = float(q.get("price", 0) or 0)
-                if price <= 0:
-                    continue
-                pre_close = float(q.get("last_close", 0) or 0)
-                change_pct = round((price - pre_close) / pre_close * 100, 2) if pre_close > 0 else 0.0
-                snapshot = QuoteSnapshot(
-                    code=code,
-                    name=str(q.get("name", "")),
-                    price=price,
-                    open=float(q.get("open", 0) or 0),
-                    high=float(q.get("high", 0) or 0),
-                    low=float(q.get("low", 0) or 0),
-                    volume=float(q.get("vol", 0) or 0),
-                    amount=float(q.get("amount", 0) or 0),
-                    change_pct=change_pct,
-                    last_close=float(q.get("last_close", 0) or 0),
-                    bid1=float(q.get("bid1", 0) or 0),
-                    bid2=float(q.get("bid2", 0) or 0),
-                    bid3=float(q.get("bid3", 0) or 0),
-                    bid4=float(q.get("bid4", 0) or 0),
-                    bid5=float(q.get("bid5", 0) or 0),
-                    ask1=float(q.get("ask1", 0) or 0),
-                    ask2=float(q.get("ask2", 0) or 0),
-                    ask3=float(q.get("ask3", 0) or 0),
-                    ask4=float(q.get("ask4", 0) or 0),
-                    ask5=float(q.get("ask5", 0) or 0),
-                    bid_vol1=float(q.get("bid_vol1", 0) or 0),
-                    bid_vol2=float(q.get("bid_vol2", 0) or 0),
-                    bid_vol3=float(q.get("bid_vol3", 0) or 0),
-                    bid_vol4=float(q.get("bid_vol4", 0) or 0),
-                    bid_vol5=float(q.get("bid_vol5", 0) or 0),
-                    ask_vol1=float(q.get("ask_vol1", 0) or 0),
-                    ask_vol2=float(q.get("ask_vol2", 0) or 0),
-                    ask_vol3=float(q.get("ask_vol3", 0) or 0),
-                    ask_vol4=float(q.get("ask_vol4", 0) or 0),
-                    ask_vol5=float(q.get("ask_vol5", 0) or 0),
-                    active_buy=float(q.get("b_vol", 0) or 0),
-                    active_sell=float(q.get("s_vol", 0) or 0),
-                    time=now_str,
-                )
-                results[code] = snapshot
+                for q in quotes:
+                    code = q.get("code", "")
+                    if not code:
+                        continue
+                    price = float(q.get("price", 0) or 0)
+                    if price <= 0:
+                        continue
+                    pre_close = float(q.get("last_close", 0) or 0)
+                    change_pct = round((price - pre_close) / pre_close * 100, 2) if pre_close > 0 else 0.0
+                    snapshot = QuoteSnapshot(
+                        code=code,
+                        name=str(q.get("name", "")),
+                        price=price,
+                        open=float(q.get("open", 0) or 0),
+                        high=float(q.get("high", 0) or 0),
+                        low=float(q.get("low", 0) or 0),
+                        volume=float(q.get("vol", 0) or 0),
+                        amount=float(q.get("amount", 0) or 0),
+                        change_pct=change_pct,
+                        last_close=float(q.get("last_close", 0) or 0),
+                        bid1=float(q.get("bid1", 0) or 0),
+                        bid2=float(q.get("bid2", 0) or 0),
+                        bid3=float(q.get("bid3", 0) or 0),
+                        bid4=float(q.get("bid4", 0) or 0),
+                        bid5=float(q.get("bid5", 0) or 0),
+                        ask1=float(q.get("ask1", 0) or 0),
+                        ask2=float(q.get("ask2", 0) or 0),
+                        ask3=float(q.get("ask3", 0) or 0),
+                        ask4=float(q.get("ask4", 0) or 0),
+                        ask5=float(q.get("ask5", 0) or 0),
+                        bid_vol1=float(q.get("bid_vol1", 0) or 0),
+                        bid_vol2=float(q.get("bid_vol2", 0) or 0),
+                        bid_vol3=float(q.get("bid_vol3", 0) or 0),
+                        bid_vol4=float(q.get("bid_vol4", 0) or 0),
+                        bid_vol5=float(q.get("bid_vol5", 0) or 0),
+                        ask_vol1=float(q.get("ask_vol1", 0) or 0),
+                        ask_vol2=float(q.get("ask_vol2", 0) or 0),
+                        ask_vol3=float(q.get("ask_vol3", 0) or 0),
+                        ask_vol4=float(q.get("ask_vol4", 0) or 0),
+                        ask_vol5=float(q.get("ask_vol5", 0) or 0),
+                        active_buy=float(q.get("b_vol", 0) or 0),
+                        active_sell=float(q.get("s_vol", 0) or 0),
+                        time=now_str,
+                    )
+                    results[code] = snapshot
             except Exception:
                 pass
 
@@ -989,6 +996,11 @@ class MonitorEngine:
             "interval_seconds": self._interval,
             "sse_connections": self._sse.active_count,
         }
+
+    def get_latest_snapshots(self) -> Dict[str, 'QuoteSnapshot']:
+        """返回最新一轮的行情快照（供 LiveTrading 复用，避免重复拉 TDX）。"""
+        with self._lock:
+            return dict(self._prev_snapshots)
 
     # ==================================================================
     # 通道1: TDX 实时价量 → MAD 检测

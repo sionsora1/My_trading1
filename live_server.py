@@ -951,7 +951,10 @@ class LiveTradingServer:
         can_trade, _ = is_trading_time()
         if can_trade:
             try:
-                rt_quotes = self.fetcher.get_realtime_quotes(stock_pool)
+                # v2.5: 优先复用 MonitorEngine 快照（共享 TDX 连接）
+                rt_quotes = self._get_realtime_from_monitor(stock_pool)
+                if not rt_quotes:
+                    rt_quotes = self.fetcher.get_realtime_quotes(stock_pool)
                 if rt_quotes:
                     today_data = {}
                     for code, quote in rt_quotes.items():
@@ -984,50 +987,22 @@ class LiveTradingServer:
     def _build_market_data_from_db(self, stock_pool: list,
                                    start_date: str, end_date: str) -> dict:
         """
-        从数据库加载历史日线数据，计算完整衍生指标（MA/收益率/波动率等）。
+        从数据库加载历史日线数据，直接读取预计算衍生指标。
 
-        这是实盘策略信号质量的基础——没有衍生指标，所有策略都无法正常工作。
+        v2.5: MA/收益率/波动率已在 sync 时预计算存入 daily_bars，
+        不再每次扫描都跑 pandas 重算。
         """
         from data.database import SQLiteManager
-        import pandas as pd
 
         db = SQLiteManager()
-        extended_start = (datetime.strptime(start_date, '%Y%m%d')
-                          - timedelta(days=180)).strftime('%Y%m%d')
-
         market_data = {}
 
         for code in stock_pool:
             ts_code = f"{code}.SH" if str(code).startswith('6') else f"{code}.SZ"
             try:
-                bars = db.get_daily_bars(ts_code, extended_start, end_date)
+                bars = db.get_daily_bars(ts_code, start_date, end_date)
                 if len(bars) < 5:
                     continue
-
-                df = pd.DataFrame(bars)
-                for col in ['open', 'high', 'low', 'close', 'volume']:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-                close = df['close']
-                volume = df['volume'] if 'volume' in df.columns else close * 100
-
-                # 均线
-                df['ma5'] = close.rolling(5, min_periods=1).mean()
-                df['ma10'] = close.rolling(10, min_periods=1).mean()
-                df['ma20'] = close.rolling(20, min_periods=1).mean()
-                df['ma60'] = close.rolling(60, min_periods=1).mean()
-                df['volume_ma20'] = volume.rolling(20, min_periods=1).mean()
-
-                # 收益率
-                df['return_1d'] = close.pct_change(1)
-                df['return_5d'] = close.pct_change(5)
-                df['return_20d'] = close.pct_change(20)
-                df['return_60d'] = close.pct_change(60)
-
-                # 波动率
-                ret = close.pct_change()
-                df['volatility'] = ret.rolling(20, min_periods=5).std()
 
                 # 股票信息
                 info = db.get_stock_info(ts_code)
@@ -1036,32 +1011,35 @@ class LiveTradingServer:
                 name = info.get('name', code) if info else code
                 industry = info.get('industry', '') if info else ''
 
-                for _, row in df.iterrows():
-                    date_str = str(row['trade_date']).replace('-', '')[:8]
-                    if date_str < start_date:
-                        continue
+                for bar in bars:
+                    date_str = str(bar['trade_date']).replace('-', '')[:8]
                     if date_str not in market_data:
                         market_data[date_str] = {}
 
+                    # 衍生指标直接用 DB 预计算值（NULL 时退为 0）
+                    def _val(key, default=0):
+                        v = bar.get(key)
+                        return v if v is not None else default
+
                     market_data[date_str][code] = {
-                        'close': row.get('close', 0) or 0,
-                        'open': row.get('open', 0) or 0,
-                        'high': row.get('high', 0) or 0,
-                        'low': row.get('low', 0) or 0,
-                        'volume': row.get('volume', 0) or 0,
-                        'amount': row.get('amount', 0) or 0,
-                        'turnover': row.get('turnover', 0) or 0,
-                        'pct_chg': row.get('pct_chg', 0) or 0,
-                        'ma5': row.get('ma5'),
-                        'ma10': row.get('ma10'),
-                        'ma20': row.get('ma20'),
-                        'ma60': row.get('ma60'),
-                        'volume_ma20': row.get('volume_ma20'),
-                        'return_1d': row.get('return_1d'),
-                        'return_5d': row.get('return_5d'),
-                        'return_20d': row.get('return_20d'),
-                        'return_60d': row.get('return_60d'),
-                        'volatility': row.get('volatility'),
+                        'close': _val('close'),
+                        'open': _val('open'),
+                        'high': _val('high'),
+                        'low': _val('low'),
+                        'volume': _val('volume'),
+                        'amount': _val('amount'),
+                        'turnover': _val('turnover'),
+                        'pct_chg': _val('pct_chg'),
+                        'ma5': bar.get('ma5'),
+                        'ma10': bar.get('ma10'),
+                        'ma20': bar.get('ma20'),
+                        'ma60': bar.get('ma60'),
+                        'volume_ma20': bar.get('volume_ma20'),
+                        'return_1d': bar.get('return_1d'),
+                        'return_5d': bar.get('return_5d'),
+                        'return_20d': bar.get('return_20d'),
+                        'return_60d': bar.get('return_60d'),
+                        'volatility': bar.get('volatility'),
                         'pe': pe, 'pb': pb,
                         'ep': 1/pe if pe and pe > 0 else 0,
                         'roe': 0,
@@ -1082,6 +1060,43 @@ class LiveTradingServer:
             return info
         except Exception:
             return {'name': ts_code, 'close': 0, 'industry': '未知'}
+
+    @staticmethod
+    def _get_realtime_from_monitor(stock_pool: list) -> dict:
+        """从 MonitorEngine 获取最新快照，转为 fetcher 兼容格式。
+
+        MonitorEngine 每 5 秒轮询 TDX 一次，快照最多 5 秒旧。
+        若 MonitorEngine 未启动或超时则返回空。
+        """
+        try:
+            from broker.monitor import MonitorEngine
+            engine = MonitorEngine.get_instance()
+            if not engine.is_running:
+                return {}
+            snapshots = engine.get_latest_snapshots()
+            if not snapshots:
+                return {}
+            result = {}
+            for code in stock_pool:
+                snap = snapshots.get(code)
+                if snap is None:
+                    continue
+                result[code] = {
+                    'ts_code': code,
+                    'name': snap.name,
+                    'close': snap.price,
+                    'open': snap.open,
+                    'high': snap.high,
+                    'low': snap.low,
+                    'volume': snap.volume,
+                    'amount': snap.amount,
+                    'change_pct': snap.change_pct,
+                    'bid1': snap.bid1,
+                    'ask1': snap.ask1,
+                }
+            return result
+        except Exception:
+            return {}
 
     def _get_realtime_price(self, ts_code: str) -> float:
         """
