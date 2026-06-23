@@ -692,36 +692,54 @@ function renderMinuteChart(data, reversalSignals) {
         { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: data.bars.map(b => b.volume), itemStyle: { color: function(p) { const b = data.bars[p.dataIndex]; return b && b.close >= b.open ? '#ef444466' : '#22c55e66'; } } }
     ];
 
-    // V底标记: 绿色大三角
+    // V底标记: 绿色大三角在谷底位置，文字标反弹%
     const vAlerts = reversalSignals.filter(s => s.type === 'v_reversal');
     if (vAlerts.length > 0) {
         series.push({
-            name: 'V底买点', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
-            data: vAlerts.map(s => {
-                const timeIdx = times.indexOf(s.time);
-                return { value: [s.time, s.price], symbolOffset: [0, -20] };
-            }),
-            symbolSize: 16,
-            itemStyle: { color: '#22c55e' },
-            symbol: 'pin',  // 图钉形状
-            emphasis: { scale: 1.5 },
-            tooltip: { formatter: p => `V底反转<br/>价格: ${p.value[1]}<br/>时间: ${p.value[0]}` }
+            name: 'V底', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
+            data: vAlerts.map(s => [s.time, s.price]),
+            symbolSize: 22,
+            itemStyle: { color: '#22c55e', borderColor: '#fff', borderWidth: 2 },
+            symbol: 'triangle',
+            label: {
+                show: true,
+                formatter: p => {
+                    const s = vAlerts.find(v => v.time === p.name);
+                    const rec = s && s.recovery_pct ? `+${s.recovery_pct}%` : 'V底';
+                    return `{green|${rec}}`;
+                },
+                rich: { green: { color: '#22c55e', fontSize: 11, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.7)', padding: [2, 5], borderRadius: 3 } },
+                position: 'top',
+                distance: 15,
+            },
+            tooltip: { formatter: p => {
+                const s = vAlerts.find(v => v.time === p.name);
+                return `🔽 V底反转<br/>谷底价: ${(p.value[1]*1).toFixed(2)}<br/>时间: ${p.name}<br/>${s && s.end_price ? '反弹至: '+s.end_price.toFixed(2)+' @ '+s.end_time : ''}${s && s.recovery_pct ? '<br/>反弹幅度: +'+s.recovery_pct+'%' : ''}`;
+            }}
         });
     }
 
-    // A顶标记: 红色三角
+    // A顶标记: 红色三角在峰顶位置
     const aAlerts = reversalSignals.filter(s => s.type === 'a_reversal');
     if (aAlerts.length > 0) {
         series.push({
-            name: 'A顶卖点', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
-            data: aAlerts.map(s => {
-                return { value: [s.time, s.price], symbolOffset: [0, 20] };
-            }),
-            symbolSize: 16,
-            itemStyle: { color: '#ef4444' },
-            symbol: 'pin',
-            emphasis: { scale: 1.5 },
-            tooltip: { formatter: p => `A顶反转<br/>价格: ${p.value[1]}<br/>时间: ${p.value[0]}` }
+            name: 'A顶', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
+            data: aAlerts.map(s => [s.time, s.price]),
+            symbolSize: 22,
+            itemStyle: { color: '#ef4444', borderColor: '#fff', borderWidth: 2 },
+            symbol: 'triangle',
+            symbolRotate: 180,  // 倒三角
+            label: {
+                show: true,
+                formatter: '{red|A顶}',
+                rich: { red: { color: '#ef4444', fontSize: 11, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.7)', padding: [2, 5], borderRadius: 3 } },
+                position: 'bottom',
+                distance: 15,
+            },
+            tooltip: { formatter: p => {
+                const s = aAlerts.find(v => v.time === p.name);
+                return `🔼 A顶反转<br/>峰顶价: ${(p.value[1]*1).toFixed(2)}<br/>时间: ${p.name}<br/>${s && s.end_price ? '回落至: '+s.end_price.toFixed(2)+' @ '+s.end_time : ''}`;
+            }}
         });
     }
 

@@ -229,23 +229,95 @@ class IntradayReversalStrategy(BaseStrategy):
                 if not self._after_first_30_min(bars):
                     continue
 
-                if self._detect_v_reversal(bars):
-                    last_close = self._last_price(bars)
+                v_info = self._detect_v_reversal_with_info(bars)
+                if v_info:
                     alerts.append({
                         'code': code, 'type': 'v_reversal',
-                        'name': '', 'price': last_close,
-                        'time': self._last_time(bars),
+                        'name': '', 'price': v_info['trough_price'],
+                        'time': v_info['trough_time'],
+                        'end_price': v_info['end_price'],
+                        'end_time': v_info['end_time'],
+                        'recovery_pct': v_info['recovery_pct'],
                     })
-                elif self._detect_a_reversal(bars):
-                    last_close = self._last_price(bars)
-                    alerts.append({
-                        'code': code, 'type': 'a_reversal',
-                        'name': '', 'price': last_close,
-                        'time': self._last_time(bars),
-                    })
+                else:
+                    a_info = self._detect_a_reversal_with_info(bars)
+                    if a_info:
+                        alerts.append({
+                            'code': code, 'type': 'a_reversal',
+                            'name': '', 'price': a_info['peak_price'],
+                            'time': a_info['peak_time'],
+                            'end_price': a_info['end_price'],
+                            'end_time': a_info['end_time'],
+                        })
             except Exception:
                 continue
         return alerts
+
+    @classmethod
+    def _detect_v_reversal_with_info(cls, bars) -> dict | None:
+        """检测V底反转，返回谷底/终点信息或None。
+
+        Returns:
+            {'trough_price': float, 'trough_time': str,
+             'end_price': float, 'end_time': str, 'recovery_pct': float}
+        """
+        if not cls._detect_v_reversal(bars):
+            return None
+        recent = list(bars[-20:])
+        closes = [float(b.get('close', 0)) for b in recent]
+        lows = [float(b.get('low', 0)) for b in recent]
+
+        # 找谷底: 最低点
+        trough_idx = min(range(5, len(recent) - 3), key=lambda i: lows[i])
+        trough_price = lows[trough_idx]
+        end_price = closes[-1]
+        recovery = (end_price - trough_price) / trough_price * 100
+
+        trough_bar = recent[trough_idx]
+        end_bar = recent[-1]
+        trough_time = cls._extract_time(trough_bar.get('trade_time', ''))
+        end_time = cls._extract_time(end_bar.get('trade_time', ''))
+
+        return {
+            'trough_price': round(trough_price, 2),
+            'trough_time': trough_time,
+            'end_price': round(end_price, 2),
+            'end_time': end_time,
+            'recovery_pct': round(recovery, 2),
+        }
+
+    @classmethod
+    def _detect_a_reversal_with_info(cls, bars) -> dict | None:
+        """检测A顶反转，返回峰顶/终点信息或None。"""
+        if not cls._detect_a_reversal(bars):
+            return None
+        recent = list(bars[-20:])
+        highs = [float(b.get('high', 0)) for b in recent]
+
+        # 找峰顶: 最高点（排除首尾各3根）
+        peak_idx = max(range(3, len(recent) - 3), key=lambda i: highs[i])
+        peak_price = highs[peak_idx]
+        end_price = float(recent[-1].get('close', 0))
+
+        peak_bar = recent[peak_idx]
+        end_bar = recent[-1]
+        peak_time = cls._extract_time(peak_bar.get('trade_time', ''))
+        end_time = cls._extract_time(end_bar.get('trade_time', ''))
+
+        return {
+            'peak_price': round(peak_price, 2),
+            'peak_time': peak_time,
+            'end_price': round(end_price, 2),
+            'end_time': end_time,
+        }
+
+    @staticmethod
+    def _extract_time(trade_time) -> str:
+        """从 'YYYY-MM-DD HH:MM:SS' 或 'HH:MM' 中提取 HH:MM。"""
+        import re
+        s = str(trade_time).strip()
+        m = re.search(r'(\d{2}:\d{2})', s)
+        return m.group(1) if m else s[:5]
 
     @staticmethod
     def _last_price(bars):

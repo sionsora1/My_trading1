@@ -898,11 +898,17 @@ def get_reversal_signals(
 
     signals = []
     for a in alerts:
-        signals.append({
+        sig = {
             'type': a['type'],
             'time': str(a['time'])[-8:-3] if len(str(a['time'])) >= 8 else str(a['time'])[:5],
             'price': a['price'],
-        })
+        }
+        if 'end_price' in a:
+            sig['end_price'] = a['end_price']
+            sig['end_time'] = str(a['end_time'])[-8:-3] if len(str(a['end_time'])) >= 8 else str(a['end_time'])[:5]
+        if 'recovery_pct' in a:
+            sig['recovery_pct'] = a['recovery_pct']
+        signals.append(sig)
 
     return {
         'code': code,
