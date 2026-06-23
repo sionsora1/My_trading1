@@ -351,7 +351,16 @@ async function loadMinute() {
     try {
         const r = await (await fetch(`${API_BASE}/minute/${selectedStock.code}?date=${date}&period=${period}`)).json();
         if (!r.bars || r.bars.length === 0) { showToast('该日期无分钟数据'); return; }
-        renderMinuteChart(r);
+        // 同时获取日内反转信号
+        let reversalSignals = [];
+        try {
+            const revResp = await fetch(`${KLINE_API}/minute/reversal/${selectedStock.code}?trade_date=${date}`);
+            const revData = await revResp.json();
+            if (revData.signals && revData.signals.length > 0) {
+                reversalSignals = revData.signals;
+            }
+        } catch(e) {}
+        renderMinuteChart(r, reversalSignals);
     } catch(e) { showToast('加载分时数据失败'); }
 }
 
@@ -668,10 +677,53 @@ function renderChart() {
 // ============================================================
 // Render: Minute chart
 // ============================================================
-function renderMinuteChart(data) {
+function renderMinuteChart(data, reversalSignals) {
+    reversalSignals = reversalSignals || [];
     const times = data.bars.map(b => b.time);
     const ohlc = data.bars.map(b => [b.open, b.close, b.low, b.high]);
-    document.getElementById('chart-title').textContent = `${data.name} (${data.code}) 分时 — ${data.date.slice(0,4)}-${data.date.slice(4,6)}-${data.date.slice(6,8)} ${data.period}分钟`;
+    const titleExtra = reversalSignals.length > 0
+        ? ` 🔔 ${reversalSignals.map(s => s.type === 'v_reversal' ? 'V底' : 'A顶').join(',')}`
+        : '';
+    document.getElementById('chart-title').textContent = `${data.name} (${data.code}) 分时 — ${data.date.slice(0,4)}-${data.date.slice(4,6)}-${data.date.slice(6,8)} ${data.period}分钟${titleExtra}`;
+
+    const series = [
+        { name: 'K线', type: 'candlestick', xAxisIndex: 0, yAxisIndex: 0, data: ohlc, itemStyle: { color: '#ef4444', color0: '#22c55e', borderColor: '#ef4444', borderColor0: '#22c55e' } },
+        { name: 'VWAP', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: data.bars.map(b => b.vwap), symbol: 'none', lineStyle: { color: '#f59e0b', width: 1.5, type: 'dashed' } },
+        { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: data.bars.map(b => b.volume), itemStyle: { color: function(p) { const b = data.bars[p.dataIndex]; return b && b.close >= b.open ? '#ef444466' : '#22c55e66'; } } }
+    ];
+
+    // V底标记: 绿色大三角
+    const vAlerts = reversalSignals.filter(s => s.type === 'v_reversal');
+    if (vAlerts.length > 0) {
+        series.push({
+            name: 'V底买点', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
+            data: vAlerts.map(s => {
+                const timeIdx = times.indexOf(s.time);
+                return { value: [s.time, s.price], symbolOffset: [0, -20] };
+            }),
+            symbolSize: 16,
+            itemStyle: { color: '#22c55e' },
+            symbol: 'pin',  // 图钉形状
+            emphasis: { scale: 1.5 },
+            tooltip: { formatter: p => `V底反转<br/>价格: ${p.value[1]}<br/>时间: ${p.value[0]}` }
+        });
+    }
+
+    // A顶标记: 红色三角
+    const aAlerts = reversalSignals.filter(s => s.type === 'a_reversal');
+    if (aAlerts.length > 0) {
+        series.push({
+            name: 'A顶卖点', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
+            data: aAlerts.map(s => {
+                return { value: [s.time, s.price], symbolOffset: [0, 20] };
+            }),
+            symbolSize: 16,
+            itemStyle: { color: '#ef4444' },
+            symbol: 'pin',
+            emphasis: { scale: 1.5 },
+            tooltip: { formatter: p => `A顶反转<br/>价格: ${p.value[1]}<br/>时间: ${p.value[0]}` }
+        });
+    }
 
     const option = {
         backgroundColor: '#1e293b', animation: false,
@@ -688,11 +740,7 @@ function renderMinuteChart(data) {
             { scale: true, gridIndex: 0, axisLabel: { color: '#94a3b8' }, splitLine: { lineStyle: { color: '#334155' } } },
             { scale: true, gridIndex: 1, axisLabel: { color: '#94a3b8', fontSize: 9 }, splitLine: { show: false } }
         ],
-        series: [
-            { name: 'K线', type: 'candlestick', xAxisIndex: 0, yAxisIndex: 0, data: ohlc, itemStyle: { color: '#ef4444', color0: '#22c55e', borderColor: '#ef4444', borderColor0: '#22c55e' } },
-            { name: 'VWAP', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: data.bars.map(b => b.vwap), symbol: 'none', lineStyle: { color: '#f59e0b', width: 1.5, type: 'dashed' } },
-            { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: data.bars.map(b => b.volume), itemStyle: { color: function(p) { const b = data.bars[p.dataIndex]; return b && b.close >= b.open ? '#ef444466' : '#22c55e66'; } } }
-        ],
+        series: series,
         dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 }]
     };
     chart.setOption(option, true);
