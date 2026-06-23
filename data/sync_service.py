@@ -169,18 +169,16 @@ class DataSyncService:
                 if df is not None and not df.empty:
                     rows = []
                     for _, row in df.iterrows():
-                        price = float(row.get('price', 0) or 0)
-                        vol = float(row.get('vol', 0) or 0)
                         rows.append({
                             'ts_code': str(row.get('ts_code', code)),
                             'trade_time': str(row.get('trade_time', '')),
-                            'period': int(row.get('period', 5)),
-                            'open': price,
-                            'high': price,
-                            'low': price,
-                            'close': price,
-                            'volume': vol,
-                            'amount': round(price * vol, 2),
+                            'period': int(period),
+                            'open': float(row.get('open', 0) or 0),
+                            'high': float(row.get('high', 0) or 0),
+                            'low': float(row.get('low', 0) or 0),
+                            'close': float(row.get('close', 0) or 0),
+                            'volume': float(row.get('volume', 0) or 0),
+                            'amount': float(row.get('amount', 0) or 0),
                         })
                     if rows:
                         self.db.upsert_minute_bars(rows)

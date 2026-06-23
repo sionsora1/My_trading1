@@ -374,56 +374,57 @@ class TDXDataSource(BaseDataSource):
     # 分钟K线
     # ============================================================
 
-    def get_minute_data(self, ts_code: str, period: str = '5',
+    def get_minute_data(self, ts_code: str, period: str = '1',
                         start_time: str = None, end_time: str = None) -> pd.DataFrame:
-        """获取分钟K线数据
+        """获取分钟K线数据（OHLCV）
 
         Args:
             ts_code: 股票代码
-            period: K线周期（默认'5'，TDX目前只支持5分钟线）
-            start_time: 起始时间 'YYYYMMDD' 格式（日期部分用于确定查询日）
+            period: K线周期 '1' / '5' (TDX category: 1min=8, 5min=0)
+            start_time: 起始时间 'YYYYMMDD' 或 'YYYY-MM-DD HH:MM:SS'
             end_time: 结束时间
 
         Returns:
-            DataFrame with columns: trade_time, price, vol
+            DataFrame with: trade_time, open, high, low, close, vol (手), amount
         """
         if not self._connect():
             return pd.DataFrame()
 
         market, code = self._parse_code(ts_code)
 
-        # 确定查询日期（整数格式如 20260616）
+        # 确定查询日期
         if start_time:
             date_str = str(start_time)[:8].replace('-', '')
         else:
             from datetime import datetime
             date_str = datetime.now().strftime('%Y%m%d')
 
-        try:
-            date_int = int(date_str)
-        except (ValueError, TypeError):
-            date_int = 20260616
+        # TDX category: 0=5min, 8=1min
+        category_map = {'1': 8, '5': 0, '15': 15, '30': 17}
+        category = category_map.get(str(period), 8)
 
         try:
-            bars = self._api.get_history_minute_time_data(market, code, date_int)
+            # 拉取足够多的 bars（1分钟最多 240/天，多拉几天确保覆盖）
+            count = 800 if category == 8 else 300
+            bars = self._api.get_security_bars(category, market, code, 0, count)
             self._disconnect()
 
             if not bars:
                 return pd.DataFrame()
 
             df = pd.DataFrame(bars)
-            # pytdx returns: price, vol per minute (240 bars/day max)
+            # pytdx get_security_bars returns: open, close, high, low, vol, amount,
+            #                               year, month, day, hour, minute, datetime
 
-            df['ts_code'] = ts_code
-            df['period'] = int(period) if period else 5
+            df['ts_code'] = ts_code  # 保持 .SH/.SZ 后缀
+            df['period'] = int(period) if period else 1
+            df['trade_time'] = df['datetime']
+            df.rename(columns={'vol': 'volume'}, inplace=True)
 
-            # 生成 trade_time 列
-            if 'hour' in df.columns and 'minute' in df.columns:
-                df['trade_time'] = (
-                    date_str[:4] + '-' + date_str[4:6] + '-' + date_str[6:8] + ' ' +
-                    df['hour'].astype(str).str.zfill(2) + ':' +
-                    df['minute'].astype(str).str.zfill(2) + ':00'
-                )
+            # 过滤日期范围
+            if date_str and 'trade_time' in df.columns:
+                date_prefix = date_str[:4] + '-' + date_str[4:6] + '-' + date_str[6:8]
+                df = df[df['trade_time'].astype(str).str.startswith(date_prefix)]
 
             return df
 

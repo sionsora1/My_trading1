@@ -177,11 +177,18 @@ class IntradayReversalStrategy(BaseStrategy):
 
     @staticmethod
     def _minutes_since_open(trade_time: str) -> int:
-        """Parse a HH:MM or HH:MM:SS string and return minutes past 09:30."""
+        """Parse a time string and return minutes past 09:30.
+
+        Handles: 'HH:MM', 'HH:MM:SS', 'YYYY-MM-DD HH:MM:SS'.
+        """
         import re
-        parts = re.split(r'[: ]', str(trade_time).strip())
+        s = str(trade_time).strip()
+        # 提取末尾的时间部分 (HH:MM 或 HH:MM:SS)
+        time_match = re.search(r'(\d{1,2}):(\d{2})', s)
+        if not time_match:
+            return 0
         try:
-            h, m = int(parts[0]), int(parts[1])
+            h, m = int(time_match.group(1)), int(time_match.group(2))
             total = h * 60 + m
             return max(0, total - _TRADING_START_MINUTES)
         except (ValueError, IndexError):

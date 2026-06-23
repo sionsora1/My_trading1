@@ -784,6 +784,136 @@ def get_kline_data(
     }
 
 
+# ============================================================
+# 分钟K线 + 日内反转策略
+# ============================================================
+
+@router.get("/minute/{code}")
+def get_minute_kline(
+    code: str,
+    trade_date: str = Query(default='', description='交易日期 YYYYMMDD，默认今天'),
+    period: str = Query(default='1', description='K线周期 1/5/15/30'),
+):
+    """获取单只股票的分钟K线数据（1分钟周期）"""
+    db = SQLiteManager()
+    ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+
+    info = db.get_stock_info(ts_code)
+    if not info:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"股票 {code} 不在数据库中")
+
+    # 日期处理
+    from datetime import datetime
+    if not trade_date:
+        trade_date = datetime.now().strftime('%Y%m%d')
+
+    # 从 minute_bars 表读取
+    rows = db._conn.execute(
+        "SELECT trade_time, open, high, low, close, volume, amount "
+        "FROM minute_bars "
+        "WHERE ts_code=? AND period=? AND trade_time LIKE ? "
+        "ORDER BY trade_time ASC",
+        (ts_code, int(period), f'{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}%'),
+    ).fetchall()
+    db.close()
+
+    bars = []
+    for r in rows:
+        t = r['trade_time']
+        # 提取 HH:MM
+        time_str = str(t)[-8:-3] if len(str(t)) >= 8 else str(t)[:5]
+        bars.append({
+            'time': time_str,
+            'open': round(r['open'], 2) if r['open'] else None,
+            'high': round(r['high'], 2) if r['high'] else None,
+            'low': round(r['low'], 2) if r['low'] else None,
+            'close': round(r['close'], 2) if r['close'] else None,
+            'volume': r['volume'] or 0,
+            'amount': r['amount'] or 0,
+        })
+
+    return {
+        'code': code,
+        'ts_code': ts_code,
+        'name': info.get('name', code),
+        'trade_date': trade_date,
+        'period': int(period),
+        'bars': bars,
+        'count': len(bars),
+    }
+
+
+@router.get("/minute/reversal/{code}")
+def get_reversal_signals(
+    code: str,
+    trade_date: str = Query(default='', description='交易日期 YYYYMMDD'),
+):
+    """对单只股票运行日内反转检测，返回K线+信号标记"""
+    from datetime import datetime
+    if not trade_date:
+        trade_date = datetime.now().strftime('%Y%m%d')
+
+    # 先从 DB 读分钟线
+    db = SQLiteManager()
+    ts_code = f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+    info = db.get_stock_info(ts_code)
+    if not info:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"股票 {code} 不在数据库中")
+
+    rows = db._conn.execute(
+        "SELECT trade_time, open, high, low, close, volume, amount "
+        "FROM minute_bars WHERE ts_code=? AND period=1 AND trade_time LIKE ? "
+        "ORDER BY trade_time ASC",
+        (ts_code, f'{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}%'),
+    ).fetchall()
+    db.close()
+
+    if len(rows) < 20:
+        return {'code': code, 'name': info.get('name', code),
+                'bars': [], 'signals': [], 'count': 0,
+                'error': '分钟线不足20根，无法检测'}
+
+    # 转换为 bars 列表
+    bars = [dict(r) for r in rows]
+
+    # 运行日内反转检测
+    from strategy.intraday_reversal import IntradayReversalStrategy
+    detector = IntradayReversalStrategy(config={'period': '1'})
+    alerts = detector.detect_reversals({code: bars})
+
+    # 格式化输出
+    result_bars = []
+    for b in bars:
+        t = str(b['trade_time'])[-8:-3] if len(str(b['trade_time'])) >= 8 else str(b['trade_time'])[:5]
+        result_bars.append({
+            'time': t,
+            'open': round(b['open'], 2) if b['open'] else None,
+            'high': round(b['high'], 2) if b['high'] else None,
+            'low': round(b['low'], 2) if b['low'] else None,
+            'close': round(b['close'], 2) if b['close'] else None,
+            'volume': b['volume'] or 0,
+        })
+
+    signals = []
+    for a in alerts:
+        signals.append({
+            'type': a['type'],
+            'time': str(a['time'])[-8:-3] if len(str(a['time'])) >= 8 else str(a['time'])[:5],
+            'price': a['price'],
+        })
+
+    return {
+        'code': code,
+        'name': info.get('name', code),
+        'bars': result_bars,
+        'signals': signals,
+        'count': len(result_bars),
+        'signal_count': len(signals),
+    }
+
+
 class StrategyRequest(BaseModel):
     code: str
     strategy: str = 'momentum'  # 'momentum' | 'trend_following'
