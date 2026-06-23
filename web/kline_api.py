@@ -900,14 +900,18 @@ def get_reversal_signals(
     for a in alerts:
         sig = {
             'type': a['type'],
-            'time': str(a['time'])[-8:-3] if len(str(a['time'])) >= 8 else str(a['time'])[:5],
+            'time': a.get('trough_time', a.get('peak_time', a['time'])),
             'price': a['price'],
         }
         if 'end_price' in a:
             sig['end_price'] = a['end_price']
-            sig['end_time'] = str(a['end_time'])[-8:-3] if len(str(a['end_time'])) >= 8 else str(a['end_time'])[:5]
+            sig['end_time'] = a['end_time']
         if 'recovery_pct' in a:
             sig['recovery_pct'] = a['recovery_pct']
+        # V底确认点: 反弹首次突破1.5%的那根K线
+        if 'confirm_price' in a:
+            sig['confirm_price'] = a['confirm_price']
+            sig['confirm_time'] = a['confirm_time']
         signals.append(sig)
 
     return {

@@ -692,29 +692,47 @@ function renderMinuteChart(data, reversalSignals) {
         { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: data.bars.map(b => b.volume), itemStyle: { color: function(p) { const b = data.bars[p.dataIndex]; return b && b.close >= b.open ? '#ef444466' : '#22c55e66'; } } }
     ];
 
-    // V底标记: 绿色大三角在谷底位置，文字标反弹%
+    // V底标记: 绿色▲谷底 + 黄色◆确认点
     const vAlerts = reversalSignals.filter(s => s.type === 'v_reversal');
     if (vAlerts.length > 0) {
+        // 谷底标记: 绿色三角
         series.push({
-            name: 'V底', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
+            name: 'V底·谷底', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
             data: vAlerts.map(s => [s.time, s.price]),
-            symbolSize: 22,
+            symbolSize: 20,
             itemStyle: { color: '#22c55e', borderColor: '#fff', borderWidth: 2 },
             symbol: 'triangle',
             label: {
                 show: true,
-                formatter: p => {
-                    const s = vAlerts.find(v => v.time === p.name);
-                    const rec = s && s.recovery_pct ? `+${s.recovery_pct}%` : 'V底';
-                    return `{green|${rec}}`;
-                },
-                rich: { green: { color: '#22c55e', fontSize: 11, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.7)', padding: [2, 5], borderRadius: 3 } },
-                position: 'top',
-                distance: 15,
+                formatter: '{green|谷底}',
+                rich: { green: { color: '#22c55e', fontSize: 10, fontWeight: 'bold', backgroundColor: 'rgba(0,0,0,0.75)', padding: [1, 4], borderRadius: 3 } },
+                position: 'top', distance: 10,
             },
             tooltip: { formatter: p => {
                 const s = vAlerts.find(v => v.time === p.name);
-                return `🔽 V底反转<br/>谷底价: ${(p.value[1]*1).toFixed(2)}<br/>时间: ${p.name}<br/>${s && s.end_price ? '反弹至: '+s.end_price.toFixed(2)+' @ '+s.end_time : ''}${s && s.recovery_pct ? '<br/>反弹幅度: +'+s.recovery_pct+'%' : ''}`;
+                return `🟢 V底·谷底<br/>价格: ${(p.value[1]*1).toFixed(2)}<br/>时间: ${p.name}`;
+            }}
+        });
+        // 确认点标记: 黄色菱形（反弹首次突破1.5%）
+        series.push({
+            name: 'V底·确认', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
+            data: vAlerts.map(s => [s.confirm_time || s.end_time, s.confirm_price || s.end_price]),
+            symbolSize: 18,
+            itemStyle: { color: '#f59e0b', borderColor: '#fff', borderWidth: 2 },
+            symbol: 'diamond',
+            label: {
+                show: true,
+                formatter: p => {
+                    const s = vAlerts.find(v => (v.confirm_time || v.end_time) === p.name);
+                    const rec = s && s.recovery_pct ? `+${s.recovery_pct}%` : '';
+                    return `{yellow|确认 ${rec}}`;
+                },
+                rich: { yellow: { color: '#000', fontSize: 10, fontWeight: 'bold', backgroundColor: '#f59e0b', padding: [1, 4], borderRadius: 3 } },
+                position: 'top', distance: 10,
+            },
+            tooltip: { formatter: p => {
+                const s = vAlerts.find(v => (v.confirm_time || v.end_time) === p.name);
+                return `🟡 V底·确认点<br/>反弹突破+1.5%<br/>价格: ${(p.value[1]*1).toFixed(2)}<br/>时间: ${p.name}<br/>${s ? '总反弹: +'+s.recovery_pct+'%' : ''}`;
             }}
         });
     }

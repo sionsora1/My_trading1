@@ -235,6 +235,8 @@ class IntradayReversalStrategy(BaseStrategy):
                         'code': code, 'type': 'v_reversal',
                         'name': '', 'price': v_info['trough_price'],
                         'time': v_info['trough_time'],
+                        'confirm_price': v_info['confirm_price'],
+                        'confirm_time': v_info['confirm_time'],
                         'end_price': v_info['end_price'],
                         'end_time': v_info['end_time'],
                         'recovery_pct': v_info['recovery_pct'],
@@ -255,10 +257,11 @@ class IntradayReversalStrategy(BaseStrategy):
 
     @classmethod
     def _detect_v_reversal_with_info(cls, bars) -> dict | None:
-        """检测V底反转，返回谷底/终点信息或None。
+        """检测V底反转，返回谷底/确认点信息或None。
 
         Returns:
             {'trough_price': float, 'trough_time': str,
+             'confirm_price': float, 'confirm_time': str,
              'end_price': float, 'end_time': str, 'recovery_pct': float}
         """
         if not cls._detect_v_reversal(bars):
@@ -271,16 +274,31 @@ class IntradayReversalStrategy(BaseStrategy):
         trough_idx = min(range(5, len(recent) - 3), key=lambda i: lows[i])
         trough_price = lows[trough_idx]
         end_price = closes[-1]
+
+        # 找反弹确认点: 从谷底往后，首次突破 1.5% 的那根K线
+        confirm_idx = None
+        confirm_price = None
+        for i in range(trough_idx + 1, len(recent)):
+            if trough_price > 0 and (closes[i] - trough_price) / trough_price >= 0.015:
+                confirm_idx = i
+                confirm_price = closes[i]
+                break
+
         recovery = (end_price - trough_price) / trough_price * 100
 
         trough_bar = recent[trough_idx]
         end_bar = recent[-1]
         trough_time = cls._extract_time(trough_bar.get('trade_time', ''))
         end_time = cls._extract_time(end_bar.get('trade_time', ''))
+        confirm_time = cls._extract_time(recent[confirm_idx].get('trade_time', '')) if confirm_idx is not None else end_time
+        if confirm_price is None:
+            confirm_price = end_price
 
         return {
             'trough_price': round(trough_price, 2),
             'trough_time': trough_time,
+            'confirm_price': round(confirm_price, 2),
+            'confirm_time': confirm_time,
             'end_price': round(end_price, 2),
             'end_time': end_time,
             'recovery_pct': round(recovery, 2),
