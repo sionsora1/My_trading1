@@ -351,16 +351,19 @@ async function loadMinute() {
     try {
         const r = await (await fetch(`${API_BASE}/minute/${selectedStock.code}?date=${date}&period=${period}`)).json();
         if (!r.bars || r.bars.length === 0) { showToast('该日期无分钟数据'); return; }
-        // 同时获取日内反转信号
-        let reversalSignals = [];
+        // 同时获取日内反转信号 + 枢轴点
+        let reversalSignals = [], pivotData = null;
         try {
-            const revResp = await fetch(`${KLINE_API}/minute/reversal/${selectedStock.code}?trade_date=${date}`);
+            const [revResp, pivResp] = await Promise.all([
+                fetch(`${KLINE_API}/minute/reversal/${selectedStock.code}?trade_date=${date}`),
+                fetch(`${KLINE_API}/pivot/${selectedStock.code}?trade_date=${date}`)
+            ]);
             const revData = await revResp.json();
-            if (revData.signals && revData.signals.length > 0) {
-                reversalSignals = revData.signals;
-            }
+            if (revData.signals && revData.signals.length > 0) reversalSignals = revData.signals;
+            const pivData = await pivResp.json();
+            if (pivData.pivot) pivotData = pivData;
         } catch(e) {}
-        renderMinuteChart(r, reversalSignals);
+        renderMinuteChart(r, reversalSignals, pivotData);
     } catch(e) { showToast('加载分时数据失败'); }
 }
 
@@ -677,8 +680,9 @@ function renderChart() {
 // ============================================================
 // Render: Minute chart
 // ============================================================
-function renderMinuteChart(data, reversalSignals) {
+function renderMinuteChart(data, reversalSignals, pivotData) {
     reversalSignals = reversalSignals || [];
+    pivotData = pivotData || null;
     const times = data.bars.map(b => b.time);
     const ohlc = data.bars.map(b => [b.open, b.close, b.low, b.high]);
     const titleExtra = reversalSignals.length > 0
@@ -691,6 +695,26 @@ function renderMinuteChart(data, reversalSignals) {
         { name: 'VWAP', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: data.bars.map(b => b.vwap), symbol: 'none', lineStyle: { color: '#f59e0b', width: 1.5, type: 'dashed' } },
         { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: data.bars.map(b => b.volume), itemStyle: { color: function(p) { const b = data.bars[p.dataIndex]; return b && b.close >= b.open ? '#ef444466' : '#22c55e66'; } } }
     ];
+
+    // 枢轴点水平线
+    if (pivotData && pivotData.levels) {
+        pivotData.levels.forEach(lv => {
+            series.push({
+                name: lv.label, type: 'line', xAxisIndex: 0, yAxisIndex: 0,
+                data: times.map(() => lv.price),
+                symbol: 'none',
+                lineStyle: { color: lv.color, width: lv.label === 'P' ? 2 : 1,
+                    type: lv.label === 'P' ? 'solid' : 'dashed' },
+                label: {
+                    show: true, position: 'end',
+                    formatter: `{lv|${lv.label} ${lv.price}}`,
+                    rich: { lv: { color: lv.color, fontSize: 10, fontWeight: 'bold',
+                        backgroundColor: 'rgba(15,23,42,0.85)', padding: [1, 4], borderRadius: 2 } }
+                },
+                tooltip: { formatter: `${lv.label}: ${lv.price}` }
+            });
+        });
+    }
 
     // V底标记: 绿色▲谷底 + 黄色◆确认点
     const vAlerts = reversalSignals.filter(s => s.type === 'v_reversal');
