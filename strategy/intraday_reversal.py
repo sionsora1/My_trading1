@@ -25,11 +25,12 @@ class IntradayReversalStrategy(BaseStrategy):
         period (str):              Bar period in minutes ('5' default).
     """
 
-    def __init__(self, config: Optional[dict] = None):
+    def __init__(self, config: Optional[dict] = None, fetcher=None):
         super().__init__(config)
         self.max_single_weight: float = float(
             self.config.get('max_single_weight', 0.10))
         self.period: str = str(self.config.get('period', '5'))
+        self._fetcher = fetcher  # 注入 DataFetcher，避免每次独立连接 TDX
 
     # ------------------------------------------------------------------
     # Pattern detectors
@@ -208,10 +209,11 @@ class IntradayReversalStrategy(BaseStrategy):
         signals: List[dict] = []
         current_positions = set(portfolio.get('positions', {}).keys())
 
-        # Lazy-import DataFetcher to avoid circular dependency at module level
-        from data.fetcher import DataFetcher
-
-        fetcher = DataFetcher()
+        # 使用注入的 DataFetcher（由 LiveTradingServer 统一管理）
+        fetcher = self._fetcher
+        if fetcher is None:
+            from data.fetcher import DataFetcher
+            fetcher = DataFetcher()
 
         # Build time window: fetch only today's bars (date format: YYYYMMDD)
         start_time = f"{date[:4]}-{date[4:6]}-{date[6:8]} 09:00:00"

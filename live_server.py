@@ -132,7 +132,7 @@ class LiveTradingServer:
         strategies = []
         for name in profile['strategies']:
             try:
-                s = _get_strat(name)
+                s = _get_strat(name, fetcher=self.fetcher)
                 strategies.append(s)
             except Exception as e:
                 logger.error(f'策略 {name} 加载失败: {e}', extra={'data': {'strategy': name}})
@@ -611,7 +611,7 @@ class LiveTradingServer:
             if strategy_name and strategy_name != 'all':
                 # 用户明确指定了策略，直接使用
                 try:
-                    single_strategy = get_strategy(strategy_name)
+                    single_strategy = get_strategy(strategy_name, fetcher=self.fetcher)
                     active_strategies = [single_strategy]
                     active_profile = {'strategies': [strategy_name], 'name': strategy_name}
                 except Exception as e:

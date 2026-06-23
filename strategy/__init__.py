@@ -87,13 +87,23 @@ STRATEGY_REGISTRY = {
 }
 
 
-def get_strategy(strategy_name: str, config: dict = None):
-    """获取策略实例"""
+def get_strategy(strategy_name: str, config: dict = None, fetcher=None):
+    """获取策略实例
+
+    Args:
+        strategy_name: 策略名
+        config: 策略配置
+        fetcher: 可选的 DataFetcher（注入以复用行情连接）
+    """
     if strategy_name not in STRATEGY_REGISTRY:
         raise ValueError(f"未知策略: {strategy_name}")
 
     strategy_info = STRATEGY_REGISTRY[strategy_name]
-    return strategy_info['class'](config)
+    cls = strategy_info['class']
+    try:
+        return cls(config, fetcher=fetcher)
+    except TypeError:
+        return cls(config)
 
 
 def get_all_strategies():
