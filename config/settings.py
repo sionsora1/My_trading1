@@ -229,26 +229,26 @@ ANOMALY_DETECTOR_CONFIG = {
     # ── 逐笔大单 ──
     'trans_big': {
         'interval_sec': 3,             # 独立线程轮询间隔
-        'abs_threshold': 20_000_000,   # 绝对下限 (2000万)
+        'abs_threshold': 30_000_000,   # 绝对下限 (2000→3000万)
         'dynamic_multiple': 2,          # 分钟成交额中位数 × N (配合 _compute_trans_medians)
         'lookback_days': 30,           # 历史基线天数
         'super_large_multiple': 3,     # 特大单倍率
-        'super_large_abs': 50_000_000, # 特大单绝对下限 (5000万)
+        'super_large_abs': 80_000_000, # 特大单绝对下限 (5000→8000万)
         'giant_abs': 100_000_000,      # 巨单绝对下限 (1亿)
         'auction_days': 5,             # 集合竞价对比天数
         'auction_multiple': 3,         # 竞价异常倍率
-        'pre_filter_mad': 3,           # 预筛选 MAD 倍率
+        'pre_filter_mad': 5,           # 预筛选 MAD 倍率 (3→5)
     },
     # ── 盘口异动 ──
     'orderbook': {
-        'cooldown_sec': 30,            # 冷却时间
+        'cooldown_sec': 60,            # 冷却时间 (30→60)
         'window_size': 12,             # 60秒 / 5秒 = 12拍
-        'bid_change_multiple': 10,     # 挂单突变倍率
-        'bid_change_min_hands': 2000,  # 挂单突变最小于数
+        'bid_change_multiple': 15,     # 挂单突变倍率 (10→15)
+        'bid_change_min_hands': 5000,  # 挂单突变最小于数 (2000→5000)
         'imbalance_severe_low': 0.2,   # 严重失衡下限
         'imbalance_severe_high': 5,    # 严重失衡上限
-        'imbalance_min_hands': 5000,   # 失衡最小于数
-        'cancel_disappear_hands': 200, # 撤单消失线程
+        'imbalance_min_hands': 10000,  # 失衡最小于数 (5000→10000)
+        'cancel_disappear_hands': 500, # 撤单消失线程 (200→500)
         'spread_pct_threshold': 0.5,   # 价差异动阈值 %
         'spread_mean_multiple': 5,     # 价差异动均值倍率
     },
@@ -263,9 +263,9 @@ ANOMALY_DETECTOR_CONFIG = {
     # ── 换手率异动 ──
     'turnover': {
         'lookback_days': 30,           # 历史中位数天数
-        'five_min_multiple': 3,        # 5分钟增量倍率 (3x 5分钟历史中位数)
-        'daily_hot_multiple': 2,       # 全天放量倍率 (2x 日内时间加权中位数)
-        'daily_extreme_multiple': 3,   # 全天极端倍率 (3x 日内时间加权中位数)
+        'five_min_multiple': 5,        # 5分钟增量倍率 (3→5)
+        'daily_hot_multiple': 3,       # 全天放量倍率 (2→3)
+        'daily_extreme_multiple': 5,   # 全天极端倍率 (3→5)
     },
     # ── 涨跌停加速 ──
     'limit_move': {
