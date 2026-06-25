@@ -1034,7 +1034,16 @@ class MonitorEngine:
             # ── 录制模式: 自动保存快照到 test_data/ ──
             try:
                 from test.replay_api import get_recorder
-                get_recorder().record_snapshots(curr)
+                rec = get_recorder()
+                if rec.is_recording:
+                    # 收盘自动停止
+                    now = datetime.now()
+                    if now.time() > datetime.strptime('15:05', '%H:%M').time() or now.weekday() >= 5:
+                        rec.stop()
+                        from test.replay_recorder import RecordSession
+                        RecordSession.cleanup_old(max_days=5)
+                    else:
+                        rec.record_snapshots(curr)
             except Exception:
                 pass
 

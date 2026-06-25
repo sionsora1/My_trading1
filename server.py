@@ -452,6 +452,38 @@ web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 app.mount("/static", StaticFiles(directory=web_dir), name="static")
 
 
+def _auto_record_on_startup():
+    """启动时判断是否在交易时段，是则自动开始录制，收盘自动停止。"""
+    try:
+        from test.replay_recorder import RecordSession
+        from datetime import datetime, time as dt_time
+        now = datetime.now()
+        if now.weekday() >= 5:
+            return
+        t = now.time()
+        if not (dt_time(9, 25) <= t <= dt_time(15, 0)):
+            return
+        recorder = RecordSession()
+        if not recorder.is_recording:
+            recorder.start([])  # 使用默认股票池
+            logger.info('[AutoRecord] 开盘自动录制已启动')
+
+        # 后台线程等待收盘自动停止
+        import threading
+        def _wait_and_stop():
+            while recorder.is_recording:
+                now2 = datetime.now()
+                if now2.time() > dt_time(15, 5) or now2.weekday() >= 5:
+                    recorder.stop()
+                    RecordSession.cleanup_old(max_days=5)
+                    logger.info('[AutoRecord] 收盘自动停止录制')
+                    break
+                time.sleep(60)
+        threading.Thread(target=_wait_and_stop, daemon=True, name='auto-record-stop').start()
+    except Exception as e:
+        logger.warning(f'[AutoRecord] 启动失败: {e}')
+
+
 def sync_kline_to_latest():
     """启动时自动同步日线+分钟线到最新交易日，含衍生指标计算。"""
     try:
@@ -488,6 +520,8 @@ async def startup_event():
     MarketWatcherEngine.get_instance().set_event_loop(asyncio.get_running_loop())
     # 启动时自动同步 K 线到最新（后台，不阻塞服务启动）
     asyncio.create_task(asyncio.to_thread(sync_kline_to_latest))
+    # 清理旧录制 + 开盘自动录制
+    asyncio.create_task(asyncio.to_thread(_auto_record_on_startup))
 
 
 @app.get("/", response_class=HTMLResponse)
