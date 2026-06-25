@@ -486,8 +486,8 @@ async def startup_event():
     MonitorEngine.get_instance().set_event_loop(asyncio.get_running_loop())
     from broker.market_watcher import MarketWatcherEngine
     MarketWatcherEngine.get_instance().set_event_loop(asyncio.get_running_loop())
-    # 启动时自动同步 K 线到最新
-    await asyncio.to_thread(sync_kline_to_latest)
+    # 启动时自动同步 K 线到最新（后台，不阻塞服务启动）
+    asyncio.create_task(asyncio.to_thread(sync_kline_to_latest))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2458,6 +2458,9 @@ app.include_router(kline_api_router)
 
 from web.db_api import router as db_api_router
 app.include_router(db_api_router)
+
+from test.replay_api import router as replay_api_router
+app.include_router(replay_api_router)
 
 # ============================================================
 # 启动服务
