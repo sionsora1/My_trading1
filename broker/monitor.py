@@ -27,12 +27,13 @@ import asyncio
 import dataclasses
 import json
 import math
+import queue
 import random
 import statistics
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -588,14 +589,14 @@ class MonitorEngine:
         self._sse = SSEManager()
 
         # ── 新增: 异动检测器 ──
-        from broker.detector import SimpleQueue, AnomalyAlert  # noqa: F811
+        from broker.detector import AnomalyAlert  # noqa: F811
         from broker.detector.divergence import DivergenceDetector
         from broker.detector.orderbook import OrderbookDetector
         from broker.detector.limit_move import LimitMoveDetector
         from broker.detector.turnover import TurnoverDetector
         from broker.detector.trans_big import TransBigDetector
 
-        self._trans_queue = SimpleQueue()
+        self._trans_queue = queue.Queue()
         self._divergence_detector = DivergenceDetector()
         self._orderbook_detector = OrderbookDetector()
         self._limit_move_detector = LimitMoveDetector()
@@ -624,6 +625,17 @@ class MonitorEngine:
         self._stock_names: Dict[str, str] = {}
 
         logger.info("MonitorEngine 初始化完成 (MAD动态基线 + 东方财富双通道)")
+
+    @staticmethod
+    def _drain_queue(q: queue.Queue) -> list:
+        """非阻塞取出队列中所有项。"""
+        items = []
+        while True:
+            try:
+                items.append(q.get_nowait())
+            except queue.Empty:
+                break
+        return items
 
     # ------------------------------------------------------------------
     # 属性
@@ -1038,7 +1050,7 @@ class MonitorEngine:
                 if rec.is_recording:
                     # 收盘自动停止
                     now = datetime.now()
-                    if now.time() > datetime.strptime('15:05', '%H:%M').time() or now.weekday() >= 5:
+                    if now.time() > time(15, 5) or now.weekday() >= 5:
                         rec.stop()
                         from test.replay_recorder import RecordSession
                         RecordSession.cleanup_old(max_days=5)
@@ -1242,7 +1254,7 @@ class MonitorEngine:
             except Exception as e:
                 logger.error(f"排名突变检测异常: {e}", exc_info=True)
             try:
-                anomaly_alerts += self._trans_queue.get_all_nonblocking()
+                anomaly_alerts += self._drain_queue(self._trans_queue)
             except Exception as e:
                 logger.error(f"逐笔大单告警获取异常: {e}", exc_info=True)
 

@@ -9,19 +9,20 @@
     5. 分类: 大单 / 特大单(>3×阈值且>5000万) / 巨单(>1亿)
     6. 集合竞价(buyorsell=8): 对比历史5天同时段成交量，>3×则告警
 
-告警通过 SimpleQueue 非阻塞传递，由 MonitorEngine 消费并推送到 SSE。
+告警通过 queue.Queue 非阻塞传递，由 MonitorEngine 消费并推送到 SSE。
 """
 
 from __future__ import annotations
 
+import queue
 import statistics
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from typing import Any, Dict, List, Optional, Tuple
 
-from broker.detector import AnomalyAlert, SimpleQueue
+from broker.detector import AnomalyAlert
 from config.settings import ANOMALY_DETECTOR_CONFIG, DATA_SOURCE_CONFIG
 from utils.logger import get_logger
 
@@ -35,7 +36,7 @@ class TransBigDetector:
     检测单笔成交额超过动态阈值的大单，并分类输出告警。
 
     Attributes:
-        _queue: 告警输出队列 (SimpleQueue)
+        _queue: 告警输出队列 (queue.Queue)
         _stock_pool: 监控股票池 (6位纯数字代码)
         _stop_event: 停止信号
         _hist_medians: 每只股票近30日逐笔成交额中位数
@@ -44,7 +45,7 @@ class TransBigDetector:
         _prev_snapshots: 上一轮快照 (用于计算 delta)
     """
 
-    def __init__(self, queue: SimpleQueue, stock_pool: List[str], **kwargs: Any):
+    def __init__(self, queue: 'queue.Queue', stock_pool: List[str], **kwargs: Any):
         """初始化逐笔大单检测器。
 
         Args:
@@ -591,28 +592,20 @@ class TransBigDetector:
     def is_trading_time() -> bool:
         """判断当前是否在 A 股交易时段。
 
-        交易时段:
-            周一至周五 9:25-11:30, 13:00-15:00
-
-        集合竞价时段 9:15-9:25 也算在内，用于检测竞价异动。
+        与 broker.base.is_trading_time 的区别：9:25 开始（覆盖集合竞价），
+        且不查询交易日历（避免热路径 DB 查询）。
 
         Returns:
             True 如果在交易时段内
         """
         now = datetime.now()
-        # 周末
         if now.weekday() >= 5:
             return False
 
         t = now.time()
         # 早盘: 9:25 - 11:30 (含开盘竞价公布)
-        morning_start = t.replace(hour=9, minute=25, second=0, microsecond=0)
-        morning_end = t.replace(hour=11, minute=30, second=0, microsecond=0)
+        morning = dt_time(9, 25) <= t <= dt_time(11, 30)
         # 午盘: 13:00 - 15:00 (含收盘竞价)
-        afternoon_start = t.replace(hour=13, minute=0, second=0, microsecond=0)
-        afternoon_end = t.replace(hour=15, minute=0, second=0, microsecond=0)
-
-        morning = morning_start <= t <= morning_end
-        afternoon = afternoon_start <= t <= afternoon_end
+        afternoon = dt_time(13, 0) <= t <= dt_time(15, 0)
 
         return morning or afternoon

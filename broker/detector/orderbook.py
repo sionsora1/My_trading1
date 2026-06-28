@@ -19,7 +19,7 @@ import time
 from collections import deque
 from typing import Any, Dict, List
 
-from broker.detector import AnomalyAlert
+from broker.detector import AnomalyAlert, CooldownMixin
 from broker.monitor import QuoteSnapshot
 from config.settings import ANOMALY_DETECTOR_CONFIG
 from utils.logger import get_logger
@@ -33,7 +33,7 @@ _BID_PRICE_FIELDS = ('bid1', 'bid2', 'bid3', 'bid4', 'bid5')
 _ASK_PRICE_FIELDS = ('ask1', 'ask2', 'ask3', 'ask4', 'ask5')
 
 
-class OrderbookDetector:
+class OrderbookDetector(CooldownMixin):
     """盘口异动检测器。
 
     监控五档挂单结构，检测挂单突变、盘口失衡、大单撤单、价差突变。
@@ -45,7 +45,7 @@ class OrderbookDetector:
 
     def __init__(self, **kwargs: Any) -> None:
         cfg = ANOMALY_DETECTOR_CONFIG.get('orderbook', {})
-        self._cooldown_sec: float = float(
+        self.cooldown_sec: float = float(
             kwargs.get('cooldown_sec', cfg.get('cooldown_sec', 30))
         )
         self._window_size: int = int(
@@ -80,8 +80,8 @@ class OrderbookDetector:
         self._windows: Dict[str, deque] = {}
         # 上一拍快照: code -> QuoteSnapshot
         self._prev_snapshots: Dict[str, QuoteSnapshot] = {}
-        # 冷却期: code -> {subtype: last_alert_timestamp}
-        self._cooldowns: Dict[str, Dict[str, float]] = {}
+        # 冷却期: "code:subtype" -> timestamp
+        self._cooldowns: Dict[str, float] = {}
         # 流通股本缓存 (按股本分档调整阈值)
         self._liutong_cache: Dict[str, float] = {}
 
@@ -89,7 +89,7 @@ class OrderbookDetector:
             'OrderbookDetector 初始化完成',
             extra={
                 'data': {
-                    'cooldown_sec': self._cooldown_sec,
+                    'cooldown_sec': self.cooldown_sec,
                     'window_size': self._window_size,
                     'bid_change_multiple': self._bid_change_multiple,
                     'bid_change_min_hands': self._bid_change_min_hands,
@@ -239,7 +239,7 @@ class OrderbookDetector:
         if window is None or len(window) < self._window_size:
             return []
 
-        if not self._cooldown_ok(code, 'bid_ask_surge', now):
+        if not self._acquire_cooldown(code, 'bid_ask_surge', now):
             return []
 
         # 计算各档位的历史中位数
@@ -302,7 +302,6 @@ class OrderbookDetector:
                 )
 
         if alerts:
-            self._mark_cooldown(code, 'bid_ask_surge', now)
             logger.info(
                 '挂单突变',
                 extra={
@@ -332,7 +331,7 @@ class OrderbookDetector:
         Returns:
             触发的告警列表
         """
-        if not self._cooldown_ok(code, 'imbalance', now):
+        if not self._acquire_cooldown(code, 'imbalance', now):
             return []
 
         total_bid = sum(getattr(snap, f) for f in _BID_VOL_FIELDS)
@@ -375,7 +374,6 @@ class OrderbookDetector:
             },
         )
 
-        self._mark_cooldown(code, 'imbalance', now)
         logger.info(
             '盘口失衡',
             extra={
@@ -410,7 +408,7 @@ class OrderbookDetector:
         if prev is None:
             return []
 
-        if not self._cooldown_ok(code, 'cancel', now):
+        if not self._acquire_cooldown(code, 'cancel', now):
             return []
 
         window = self._windows.get(code)
@@ -488,7 +486,6 @@ class OrderbookDetector:
                     )
 
         if alerts:
-            self._mark_cooldown(code, 'cancel', now)
             logger.info(
                 '大单撤单',
                 extra={
@@ -518,7 +515,7 @@ class OrderbookDetector:
         Returns:
             触发的告警列表
         """
-        if not self._cooldown_ok(code, 'spread_surge', now):
+        if not self._acquire_cooldown(code, 'spread_surge', now):
             return []
 
         window = self._windows.get(code)
@@ -551,7 +548,6 @@ class OrderbookDetector:
                 },
             )
 
-            self._mark_cooldown(code, 'spread_surge', now)
             logger.info(
                 '价差突变',
                 extra={
@@ -624,30 +620,3 @@ class OrderbookDetector:
                 medians.append(0.0)
         return medians
 
-    def _cooldown_ok(self, code: str, subtype: str, now: float) -> bool:
-        """检查指定股票+子类型的冷却是否已过期。
-
-        Args:
-            code: 股票代码
-            subtype: 子类型
-            now: 当前时间戳
-
-        Returns:
-            True 表示冷却已过期，可以触发
-        """
-        if code not in self._cooldowns:
-            return True
-        last = self._cooldowns[code].get(subtype, 0.0)
-        return (now - last) >= self._cooldown_sec
-
-    def _mark_cooldown(self, code: str, subtype: str, now: float) -> None:
-        """标记冷却时间。
-
-        Args:
-            code: 股票代码
-            subtype: 子类型
-            now: 当前时间戳
-        """
-        if code not in self._cooldowns:
-            self._cooldowns[code] = {}
-        self._cooldowns[code][subtype] = now

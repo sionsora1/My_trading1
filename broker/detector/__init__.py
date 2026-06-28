@@ -1,19 +1,12 @@
 """
-异动检测模块 — 6 个检测器 + AnomalyAlert + SimpleQueue
-
-检测器列表:
-    DivergenceDetector  — 内外盘背离
-    OrderbookDetector   — 盘口异动 (四维)
-    LimitMoveDetector   — 涨跌停加速
-    TurnoverDetector    — 换手率异动
-    TransBigDetector    — 逐笔大单 (独立线程)
-    RankChangeDetector  — 涨跌幅排名突变
+异动检测模块 — 6 个检测器 + AnomalyAlert
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import queue
 import threading
 import time
 from collections import deque
@@ -55,29 +48,32 @@ class AnomalyAlert:
 
 
 # ═══════════════════════════════════════════════════════════════
-# SimpleQueue — 线程安全非阻塞队列
+# CooldownMixin — 所有检测器共享的冷却逻辑
 # ═══════════════════════════════════════════════════════════════
 
 
-class SimpleQueue:
-    """线程安全非阻塞队列，用于逐笔大单跨线程传递告警。"""
+class CooldownMixin:
+    """为检测器提供统一的冷却期检查。
 
-    def __init__(self):
-        self._items: deque = deque()
-        self._lock = threading.Lock()
+    子类需定义:
+        self._cooldowns: Dict[str, float]  — key="code:subtype", value=timestamp
+        self.cooldown_sec: float            — 冷却秒数
+    """
 
-    def put(self, alert: AnomalyAlert) -> None:
-        with self._lock:
-            self._items.append(alert)
+    _cooldowns: Dict[str, float]
+    cooldown_sec: float
 
-    def get_all_nonblocking(self) -> List[AnomalyAlert]:
-        """取出所有待处理项 (非阻塞)。"""
-        with self._lock:
-            items = list(self._items)
-            self._items.clear()
-            return items
+    def _acquire_cooldown(self, code: str, subtype: str, now: float) -> bool:
+        """检查并设置冷却期。
 
-    @property
-    def pending_count(self) -> int:
-        with self._lock:
-            return len(self._items)
+        如果距离上次该股票该子类型的告警在冷却期内，返回 False；
+        否则更新时间戳并返回 True。
+        """
+        key = f"{code}:{subtype}"
+        last = self._cooldowns.get(key, 0.0)
+        if now - last < self.cooldown_sec:
+            return False
+        self._cooldowns[key] = now
+        return True
+
+

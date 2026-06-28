@@ -21,19 +21,31 @@ Covers:
 from __future__ import annotations
 
 import json
+import queue as std_queue
 import statistics
 import time
 from collections import deque
 
 import pytest
 
-from broker.detector import AnomalyAlert, SimpleQueue
+from broker.detector import AnomalyAlert
 from broker.detector.divergence import DivergenceDetector
 from broker.detector.limit_move import LimitMoveDetector
 from broker.detector.orderbook import OrderbookDetector
 from broker.detector.trans_big import TransBigDetector
 from broker.detector.turnover import TurnoverDetector
 from broker.monitor import QuoteSnapshot
+
+
+def _drain(q):
+    """从队列中非阻塞取出所有项。"""
+    items = []
+    while True:
+        try:
+            items.append(q.get_nowait())
+        except std_queue.Empty:
+            break
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +322,7 @@ class TestTransBigThreshold:
     @staticmethod
     def _setup_detector(code='600519'):
         """Create a TransBigDetector with queue and snapshots."""
-        queue = SimpleQueue()
+        queue = std_queue.Queue()
         detector = TransBigDetector(queue, [code], abs_threshold=20_000_000)
         # Set no hist median so threshold stays at absolute 2000万
         detector.set_hist_medians({})
@@ -326,7 +338,7 @@ class TestTransBigThreshold:
         # price=10, vol=25000手 → amount=10*25000*100=25,000,000
         txn_large = {'price': 10.0, 'vol': 25000, 'num': 10, 'buyorsell': 1, 'time': '10:00:00'}
         detector._check_single_txn('600519', txn_large, '10:00:00')
-        large_alerts = queue.get_all_nonblocking()
+        large_alerts = _drain(queue)
         assert len(large_alerts) == 1
         assert large_alerts[0].type == 'trans_big'
         assert large_alerts[0].subtype == 'large'
@@ -337,7 +349,7 @@ class TestTransBigThreshold:
         # price=10, vol=70000手 → amount=10*70000*100=70,000,000
         txn_super = {'price': 10.0, 'vol': 70000, 'num': 1, 'buyorsell': 2, 'time': '10:01:00'}
         detector._check_single_txn('600519', txn_super, '10:01:00')
-        super_alerts = queue.get_all_nonblocking()
+        super_alerts = _drain(queue)
         assert len(super_alerts) == 1
         assert super_alerts[0].subtype == 'super_large'
         assert super_alerts[0].data['amount'] >= 50_000_000
@@ -348,7 +360,7 @@ class TestTransBigThreshold:
         # price=10, vol=150000手 → amount=10*150000*100=150,000,000
         txn_giant = {'price': 10.0, 'vol': 150000, 'num': 1, 'buyorsell': 1, 'time': '10:02:00'}
         detector._check_single_txn('600519', txn_giant, '10:02:00')
-        giant_alerts = queue.get_all_nonblocking()
+        giant_alerts = _drain(queue)
         assert len(giant_alerts) == 1
         assert giant_alerts[0].subtype == 'giant'
         assert giant_alerts[0].data['amount'] >= 100_000_000
@@ -363,7 +375,7 @@ class TestTransBigThreshold:
         # ratio = 500/140 = 3.57 > 3 → auction_spike
         txn = {'price': 10.0, 'vol': 500, 'num': 0, 'buyorsell': 8, 'time': '09:25:00'}
         detector._check_single_txn('600519', txn, '09:25:00')
-        alerts = queue.get_all_nonblocking()
+        alerts = _drain(queue)
         assert len(alerts) == 1
         alert = alerts[0]
         assert alert.type == 'auction'
@@ -539,7 +551,7 @@ class TestTransBigFallback:
     def test_no_hist_median_uses_abs_minimum(self):
         """无历史中位数时，阈值退化到 2000万。"""
         from config.settings import ANOMALY_DETECTOR_CONFIG
-        queue = SimpleQueue()
+        queue = std_queue.Queue()
         detector = TransBigDetector(queue, stock_pool=['600519'])
         # 不调用 set_hist_medians
         threshold = detector._compute_threshold('600519')
@@ -617,7 +629,7 @@ class TestTransBigPreFilterWarmup:
 
     def test_pre_filter_returns_full_pool_when_cold(self):
         """delta 窗口未满 3 条时，返回全量股票池。"""
-        queue = SimpleQueue()
+        queue = std_queue.Queue()
         detector = TransBigDetector(queue, stock_pool=['600519', '000858', '300394'])
         # 不喂任何快照 → delta_window 全空
         candidates = detector._pre_filter()

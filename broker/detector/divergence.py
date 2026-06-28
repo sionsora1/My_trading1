@@ -16,7 +16,7 @@ import time
 from collections import defaultdict
 from typing import Dict, List
 
-from broker.detector import AnomalyAlert
+from broker.detector import AnomalyAlert, CooldownMixin
 from broker.monitor import QuoteSnapshot
 from config.settings import ANOMALY_DETECTOR_CONFIG
 from utils.logger import get_logger
@@ -24,7 +24,7 @@ from utils.logger import get_logger
 logger = get_logger('live_trading', 'live_trading.log')
 
 
-class DivergenceDetector:
+class DivergenceDetector(CooldownMixin):
     """内外盘背离检测器。
 
     输入当前快照和上一轮快照的 diff，同时维护每只股票的短期价格窗口
@@ -377,24 +377,3 @@ class DivergenceDetector:
         # 保留最近 window_size 拍
         if len(history) > self.window_size:
             history[:] = history[-self.window_size:]
-
-    def _acquire_cooldown(self, code: str, subtype: str, now: float) -> bool:
-        """检查并设置冷却期。
-
-        如果当前时间距离上次该股票该子类型的告警在冷却期内，返回 False；
-        否则更新时间戳并返回 True。
-
-        Args:
-            code: 股票代码
-            subtype: 子类型标识
-            now: 当前时间戳
-
-        Returns:
-            True 如果允许触发, False 如果在冷却期
-        """
-        key = f"{code}:{subtype}"
-        last = self._cooldowns.get(key, 0.0)
-        if now - last < self.cooldown_sec:
-            return False
-        self._cooldowns[key] = now
-        return True

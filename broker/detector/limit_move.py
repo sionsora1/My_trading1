@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import statistics
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Dict, List, Optional, Tuple
 
-from broker.detector import AnomalyAlert
+from broker.detector import AnomalyAlert, CooldownMixin
 from broker.monitor import QuoteSnapshot
 from config.settings import ANOMALY_DETECTOR_CONFIG
 from utils.logger import get_logger
@@ -25,7 +25,7 @@ from utils.logger import get_logger
 logger = get_logger('live_trading', 'live_trading.log')
 
 
-class LimitMoveDetector:
+class LimitMoveDetector(CooldownMixin):
     """涨跌停加速检测器。
 
     启动时缓存每只股票的涨跌停价格，运行时维护 5 分钟窗口数据，
@@ -465,38 +465,17 @@ class LimitMoveDetector:
             now: 当前时间戳
         """
         if code not in self._windows:
-            self._windows[code] = []
+            self._windows[code] = deque()
 
         window = self._windows[code]
         window.append((now, snap.price, snap.volume, snap.bid_vol1))
 
-        # 移除超过窗口大小的过期条目
+        # 移除超过窗口大小的过期条目 (deque.popleft = O(1))
         cutoff = now - self.window_sec
         while window and window[0][0] < cutoff:
-            window.pop(0)
+            window.popleft()
 
         # 防止内存膨胀 (5s 轮询 × 300s = 60 条, 上限 300 条)
         max_entries = 300
-        if len(window) > max_entries:
-            window[:] = window[-max_entries:]
-
-    def _acquire_cooldown(self, code: str, subtype: str, now: float) -> bool:
-        """检查并设置冷却期。
-
-        如果当前时间距离上次该股票该子类型的告警在冷却期内，返回 False；
-        否则更新时间戳并返回 True。
-
-        Args:
-            code: 股票代码
-            subtype: 子类型标识
-            now: 当前时间戳
-
-        Returns:
-            True 如果允许触发, False 如果在冷却期
-        """
-        key = f"{code}:{subtype}"
-        last = self._cooldowns.get(key, 0.0)
-        if now - last < self.cooldown_sec:
-            return False
-        self._cooldowns[key] = now
-        return True
+        while len(window) > max_entries:
+            window.popleft()

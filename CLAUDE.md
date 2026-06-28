@@ -98,3 +98,33 @@ market_data = {
 - Business events → `logger.info("event", extra={"data": {...}})` with structured data.
 - Errors → `logger.error(..., exc_info=True)` with full traceback.
 - Absolute order threshold is 2000万/3s + 1亿/60s.
+
+### Development Workflow (Mandatory — scaled to task size)
+
+**核心原则：任何代码改动前，必须先走流程，不能跳过直接写代码。**
+
+流程按任务规模等比缩放：
+
+```
+brainstorming  →  writing-plans  →  TDD 实现  →  code-review
+```
+
+**大功能（新模块/多文件改动）：**
+- brainstorming：读代码 → 问 3-5 个问题 → 出 2-3 个方案 → 写 spec
+- writing-plans：拆成 N 个 task，每个含代码示例和测试要求
+- TDD：每个 task 先写测试 → 最小实现 → 重构 → commit
+- code-review：每 task 审查 + 最后全分支审查
+
+**小 bug（改几行/改一个文件）：**
+- brainstorming：读代码 → 确认 1 个问题 → 一句话方案
+- writing-plans：直接 1 个 task，2-5 分钟
+- TDD：写测试用例 → 改代码 → 跑通
+- code-review：快速扫一眼即可
+
+**底线（不能跳过的）：**
+- 不能省略 brainstorming 直接写代码
+- 不能省略 writing-plans（哪怕只有 1 个 task）
+- 不能先写代码再补测试
+- 优先复用现有模块/函数/工具，不重复造轮子
+
+**易回滚：删除此整个 "Development Workflow" 段落即恢复之前行为。**

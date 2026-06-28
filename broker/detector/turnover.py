@@ -26,11 +26,11 @@ from utils.logger import get_logger
 
 logger = get_logger('live_trading', 'live_trading.log')
 
-from broker.detector import AnomalyAlert
+from broker.detector import AnomalyAlert, CooldownMixin
 from broker.monitor import QuoteSnapshot
 
 
-class TurnoverDetector:
+class TurnoverDetector(CooldownMixin):
     """换手率异动检测器。
 
     检测三种异常等级：
@@ -67,7 +67,7 @@ class TurnoverDetector:
 
         # ── 冷却期 {code: last_alert_timestamp} ──
         self._cooldowns: Dict[str, float] = {}
-        self._cooldown_sec: float = kwargs.get('cooldown_sec', 60.0)
+        self.cooldown_sec: float = kwargs.get('cooldown_sec', 60.0)
 
     def set_liutong_cache(self, liutong: Dict[str, float]) -> None:
         """设置流通股本缓存。
@@ -98,24 +98,6 @@ class TurnoverDetector:
             '换手率检测器: 历史中位数已加载',
             extra={'data': {'count': len(medians)}},
         )
-
-    def _acquire_cooldown(self, code: str, subtype: str, now: float) -> bool:
-        """检查并设置冷却期 (与 divergence/orderbook/limit_move 保持一致的接口)。
-
-        Args:
-            code: 股票代码
-            subtype: 子类型标识 (spike/hot/extreme)
-            now: 当前时间戳
-
-        Returns:
-            True 如果允许触发, False 如果在冷却期
-        """
-        key = f"{code}:{subtype}"
-        last = self._cooldowns.get(key, 0.0)
-        if now - last < self._cooldown_sec:
-            return False
-        self._cooldowns[key] = now
-        return True
 
     def _get_fallback_daily_median(self, liutong: float) -> float:
         """DB 无历史数据时，按流通股本估算日均换手率 (%)。
