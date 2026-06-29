@@ -206,6 +206,8 @@ class ReplayEngine:
 
     def _load_shared_data(self) -> None:
         """加载股票信息和日线（跨会话共享）。"""
+        # 构建 code → name 映射（录制快照可能缺名称，从 stock_info 补）
+        self._stock_names: Dict[str, str] = {}
         for session in self._sessions:
             # stock_info
             si_path = os.path.join(session.dir, 'stock_info.json')
@@ -215,6 +217,10 @@ class ReplayEngine:
                     for ts_code, v in info.items():
                         if ts_code not in self._stock_info:
                             self._stock_info[ts_code] = v
+                        code = v.get('code', '') or ts_code.split('.')[0]
+                        name = v.get('name', '')
+                        if code and name and code not in self._stock_names:
+                            self._stock_names[code] = name
 
             # daily_bars（合并，取最新）
             db_path = os.path.join(session.dir, 'daily_bars.json')
@@ -309,6 +315,7 @@ class ReplayEngine:
                 continue
             volumes = [s.get('volume', 0) for s in snaps]
             amounts = [s.get('amount', 0) for s in snaps]
+            name = snaps[0].get('name', '') or self._stock_names.get(code, code)
             daily[code] = {
                 'open': snaps[0].get('open', prices[0]),
                 'high': max(s.get('high', p) for s, p in zip(snaps, prices)),
@@ -317,7 +324,7 @@ class ReplayEngine:
                 'volume': volumes[-1] if volumes else 0,
                 'amount': amounts[-1] if amounts else 0,
                 'change_pct': snaps[-1].get('change_pct', 0) if snaps else 0,
-                'name': snaps[0].get('name', code),
+                'name': name,
             }
         return daily
 
@@ -503,8 +510,9 @@ class ReplayEngine:
             curr = {}
             for s in batch:
                 code = s['code']
+                name = s.get('name', '') or self._stock_names.get(code, code)
                 curr[code] = QuoteSnapshot(
-                    code=code, name=s.get('name', code),
+                    code=code, name=name,
                     price=s['price'], open=s['open'], high=s['high'], low=s['low'],
                     volume=s['volume'], amount=s['amount'],
                     change_pct=s.get('change_pct', 0), last_close=s.get('last_close', 0),
@@ -545,7 +553,7 @@ class ReplayEngine:
                         'type': 'mad',
                         'subtype': level,
                         'code': code,
-                        'name': snap.name,
+                        'name': name,
                         'direction': 'buy' if db_val > ds else ('sell' if ds > db_val else 'neutral'),
                         'data': {
                             'price': snap.price,

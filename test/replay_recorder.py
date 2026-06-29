@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import threading
@@ -169,6 +170,22 @@ class RecordSession:
         poller = TDXQuotesPoller()
         logger.info(f'[录制轮询] 启动: {len(self._stock_pool)} 只股票')
 
+        # 预加载名称映射（TDX 批量查询不返回名称，从 stock_info 补）
+        name_map: Dict[str, str] = {}
+        try:
+            info_path = os.path.join(self._session_dir, 'stock_info.json')
+            if os.path.isfile(info_path):
+                with open(info_path, 'r', encoding='utf-8') as f:
+                    info = json.load(f)
+                for ts_code, v in info.items():
+                    code = v.get('code', '') or ts_code.split('.')[0]
+                    name = v.get('name', '')
+                    if code and name:
+                        name_map[code] = name
+                logger.info(f'[录制轮询] 加载 {len(name_map)} 个名称映射')
+        except Exception:
+            pass
+
         while not self._poll_stop.is_set():
             if not TDXQuotesPoller.is_trading_time():
                 time.sleep(30)
@@ -184,6 +201,11 @@ class RecordSession:
             if not curr:
                 time.sleep(3)
                 continue
+
+            # 补名称
+            for code, snap in list(curr.items()):
+                if hasattr(snap, 'name') and not snap.name and code in name_map:
+                    curr[code] = dataclasses.replace(snap, name=name_map[code])
 
             try:
                 self.record_snapshots(curr)
