@@ -47,3 +47,6 @@ reports/
 e2e_*.png
 .pytest_cache/
 
+# Replay test data (live recordings, don't commit)
+test_data/
+

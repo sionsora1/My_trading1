@@ -1,5 +1,5 @@
 """
-回放测试 API — 录制控制 + 回放控制 + 结果查询
+回放测试 API — 多日录制 + 多日回放 + 策略多选 + 告警查询
 """
 
 from fastapi import APIRouter, Query, HTTPException
@@ -20,23 +20,13 @@ router = APIRouter(prefix="/api/test", tags=["test"])
 # 全局单例
 _recorder = None
 _replay_engine = None
+_replay_thread = None
 
 
 def get_recorder():
-    global _recorder
-    if _recorder is None:
-        from test.replay_recorder import RecordSession
-        _recorder = RecordSession()
-    return _recorder
-
-
-def get_replay_engine(session_date: str):
-    global _replay_engine
-    if _replay_engine is not None and _replay_engine._session_date == session_date:
-        return _replay_engine
-    from test.replay_engine import ReplayEngine
-    _replay_engine = ReplayEngine(session_date)
-    return _replay_engine
+    """获取全局 RecordSession 单例（别名，兼容旧调用）。"""
+    from test.replay_recorder import RecordSession
+    return RecordSession.get_instance()
 
 
 # ============================================================
@@ -87,28 +77,88 @@ def record_sessions():
 
 
 # ============================================================
+# 策略列表
+# ============================================================
+
+@router.get("/strategies")
+def list_strategies():
+    """返回可选策略列表。"""
+    from strategy import STRATEGY_REGISTRY
+    return [
+        {
+            'name': name,
+            'display': info.get('name', name),
+            'description': info.get('description', ''),
+            'category': info.get('category', ''),
+        }
+        for name, info in STRATEGY_REGISTRY.items()
+    ]
+
+
+# ============================================================
 # 回放
 # ============================================================
 
 class ReplayStartRequest(BaseModel):
-    session_date: str
+    sessions: list         # ['20260623', '20260624', ...]
+    strategies: list       # ['momentum', 'eight_factor', ...]
     speed: float = 1.0
-    mode: str = 'monitor'  # 'monitor' | 'live' | 'both'
+    initial_capital: float = 1_000_000
+    commission_rate: float = 0.0003
+    slippage_rate: float = 0.002
+    stop_loss_rate: float = -0.08
+    min_commission: float = 5.0
+    max_positions: int = 10
 
 
 @router.post("/replay/start")
 def replay_start(req: ReplayStartRequest):
-    """启动回放。"""
-    engine = get_replay_engine(req.session_date)
-    return engine.start(speed=req.speed, mode=req.mode)
+    """启动多日回放（后台线程执行）。"""
+    global _replay_engine, _replay_thread
+
+    if _replay_engine is not None and _replay_engine.is_running:
+        return {'status': 'already_running'}
+
+    if not req.sessions:
+        raise HTTPException(status_code=400, detail='请选择至少一个会话')
+    if not req.strategies:
+        raise HTTPException(status_code=400, detail='请选择至少一个策略')
+
+    from test.replay_engine import ReplayEngine
+
+    _replay_engine = ReplayEngine(req.sessions)
+
+    def _run():
+        _replay_engine.run(
+            strategies=req.strategies,
+            speed=req.speed,
+            initial_capital=req.initial_capital,
+            commission_rate=req.commission_rate,
+            slippage_rate=req.slippage_rate,
+            stop_loss_rate=req.stop_loss_rate,
+            min_commission=req.min_commission,
+            max_positions=req.max_positions,
+        )
+
+    _replay_thread = threading.Thread(target=_run, daemon=True, name='replay-worker')
+    _replay_thread.start()
+
+    return {
+        'status': 'started',
+        'sessions': req.sessions,
+        'strategies': req.strategies,
+        'speed': req.speed,
+    }
 
 
 @router.post("/replay/stop")
 def replay_stop():
     """停止回放。"""
+    global _replay_engine
     if _replay_engine is None:
         return {'status': 'not_running'}
-    return _replay_engine.stop()
+    result = _replay_engine.stop()
+    return {'status': 'stopped', **result}
 
 
 @router.post("/replay/speed")
@@ -127,9 +177,17 @@ def replay_progress():
     return _replay_engine.get_progress()
 
 
+@router.get("/replay/results")
+def replay_results():
+    """获取完整回放结果（告警+策略信号+交易记录+绩效）。"""
+    if _replay_engine is None:
+        return {'status': 'not_run'}
+    return _replay_engine.get_results()
+
+
 @router.get("/replay/alerts")
-def replay_alerts(limit: int = 200):
-    """查询回放产生的告警。"""
+def replay_alerts(limit: int = 500):
+    """查询回放告警。"""
     if _replay_engine is None:
         return []
     return _replay_engine.get_alerts(limit)
@@ -137,7 +195,7 @@ def replay_alerts(limit: int = 200):
 
 @router.get("/replay/summary")
 def replay_summary():
-    """告警模块汇总。"""
+    """告警类型汇总。"""
     if _replay_engine is None:
         return {}
     return _replay_engine.get_alert_summary()

@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>回放测试台</title>
+<style>
+    :root {
+        --bg: #0f172a;
+        --card-bg: #1e293b;
+        --border: #334155;
+        --text: #e2e8f0;
+        --text-dim: #94a3b8;
+        --blue: #3b82f6;
+        --green: #22c55e;
+        --red: #ef4444;
+        --orange: #f59e0b;
+        --purple: #8b5cf6;
+        --yellow: #eab308;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        background: var(--bg); color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        min-height: 100vh; padding: 16px;
+    }
+    .header {
+        display: flex; align-items: center; gap: 16px;
+        margin-bottom: 16px; padding-bottom: 12px;
+        border-bottom: 1px solid var(--border);
+    }
+    .header h1 { font-size: 1.2rem; }
+    .header a { color: var(--text-dim); font-size: 0.8rem; }
+    .card {
+        background: var(--card-bg); border: 1px solid var(--border);
+        border-radius: 8px; padding: 16px; margin-bottom: 12px;
+    }
+    .card-title { font-weight: 600; margin-bottom: 8px; font-size: 0.95rem; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .btn {
+        padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
+        cursor: pointer; font-size: 0.82rem; background: var(--card-bg); color: var(--text);
+        white-space: nowrap;
+    }
+    .btn:hover { border-color: var(--text-dim); }
+    .btn-primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-sm { padding: 4px 10px; font-size: 0.75rem; }
+    .btn-danger { background: var(--red); border-color: var(--red); color: #fff; }
+    select { padding: 4px 8px; border-radius: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border); font-size: 0.82rem; }
+    .progress-bar {
+        height: 8px; background: var(--border); border-radius: 4px;
+        overflow: hidden; margin-top: 8px;
+    }
+    .progress-fill { height: 100%; background: var(--blue); transition: width 0.5s; width: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    th, td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-dim); font-weight: 500; position: sticky; top: 0; background: var(--card-bg); }
+    .tag {
+        display: inline-block; padding: 1px 6px; border-radius: 3px;
+        font-size: 0.7rem; margin-right: 4px;
+    }
+    .tag-buy { background: rgba(34,197,94,0.15); color: var(--green); }
+    .tag-sell { background: rgba(239,68,68,0.15); color: var(--red); }
+    .tag-info { background: rgba(59,130,246,0.15); color: var(--blue); }
+    .text-green { color: var(--green); }
+    .text-red { color: var(--red); }
+    .text-dim { color: var(--text-dim); }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .scroll-table { max-height: 400px; overflow-y: auto; }
+    .checkbox-group { display: flex; flex-wrap: wrap; gap: 8px; }
+    .checkbox-item { display: flex; align-items: center; gap: 4px; font-size: 0.8rem; cursor: pointer; }
+    .metric-row { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 8px; }
+    .metric-item { text-align: center; min-width: 80px; }
+    .metric-val { font-size: 1.1rem; font-weight: 600; }
+    .metric-label { font-size: 0.7rem; color: var(--text-dim); }
+    .tabs { display: flex; gap: 0; margin-bottom: 0; }
+    .tab-btn {
+        padding: 6px 14px; border: 1px solid var(--border); background: var(--bg);
+        color: var(--text-dim); cursor: pointer; font-size: 0.8rem; border-radius: 6px 6px 0 0;
+        margin-right: -1px;
+    }
+    .tab-btn.active { background: var(--card-bg); color: var(--text); border-bottom-color: var(--card-bg); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .strategy-panel { margin-bottom: 12px; }
+    @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>🔄 回放测试台</h1>
+    <a href="/live.html">← 返回实盘</a>
+    <a href="/">🏠 首页</a>
+</div>
+
+<!-- 控制栏 -->
+<div class="card">
+    <div class="card-title">📋 回放配置</div>
+
+    <!-- 会话选择 -->
+    <div style="margin-bottom:12px;">
+        <div class="text-dim" style="font-size:0.75rem;margin-bottom:4px;">选择交易日（多选）</div>
+        <div class="checkbox-group" id="sessionCheckboxes">-- 加载中 --</div>
+    </div>
+
+    <!-- 策略选择 -->
+    <div style="margin-bottom:12px;">
+        <div class="text-dim" style="font-size:0.75rem;margin-bottom:4px;">选择策略（多选）</div>
+        <div class="checkbox-group" id="strategyCheckboxes">-- 加载中 --</div>
+    </div>
+
+    <!-- 回放参数 -->
+    <div class="row" style="margin-bottom:12px;">
+        <label style="font-size:0.8rem;">初始资金</label>
+        <input type="number" id="initCapital" value="1000000" step="100000" style="width:120px;">
+        <label style="font-size:0.8rem;">速度</label>
+        <button class="btn btn-sm" onclick="replaySetSpeedBtn(1)">1x</button>
+        <button class="btn btn-sm" onclick="replaySetSpeedBtn(5)">5x</button>
+        <button class="btn btn-sm" onclick="replaySetSpeedBtn(60)">60x</button>
+        <select id="speedCustom" onchange="replaySetSpeedBtn(parseFloat(this.value))" style="width:70px;">
+            <option value="1">1x</option><option value="5">5x</option><option value="60">60x</option>
+            <option value="300">300x</option><option value="3600">3600x</option>
+        </select>
+    </div>
+
+    <!-- 操作按钮 -->
+    <div class="row" style="margin-bottom:8px;">
+        <button class="btn btn-primary" id="btnStart" onclick="replayStart()">▶ 启动回放</button>
+        <button class="btn btn-danger" id="btnStop" onclick="replayStop()" style="display:none;">■ 停止</button>
+        <span id="replayStatus" class="text-dim" style="font-size:0.8rem;"></span>
+    </div>
+
+    <!-- 进度条 -->
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="text-dim" style="font-size:0.7rem;margin-top:4px;" id="progressText">--</div>
+</div>
+
+<!-- 结果区 -->
+<div id="resultsArea" style="display:none;">
+    <!-- Tabs: 告警 + 各策略 -->
+    <div class="card">
+        <div class="tabs" id="resultTabs">
+            <button class="tab-btn active" data-tab="alerts">🔔 告警检测</button>
+        </div>
+
+        <!-- 告警面板 -->
+        <div class="tab-content active" id="tab-alerts" style="padding-top:8px;">
+            <div id="alertSummary" style="font-size:0.78rem;margin-bottom:8px;"></div>
+            <div class="scroll-table" id="alertTable" style="max-height:500px;">-- 等待回放 --</div>
+        </div>
+
+        <!-- 策略面板（动态生成） -->
+        <div id="strategyPanels"></div>
+    </div>
+</div>
+
+<script>
+const API = '/api/test';
+let pollTimer = null;
+let allStrategies = [];
+
+// ========== 初始化 ==========
+document.addEventListener('DOMContentLoaded', () => {
+    loadSessions();
+    loadStrategies();
+});
+
+// ========== 会话加载 ==========
+async function loadSessions() {
+    try {
+        const r = await fetch(`${API}/record/sessions`).then(r => r.json());
+        const container = document.getElementById('sessionCheckboxes');
+        if (!r.length) {
+            container.innerHTML = '<span class="text-dim">暂无录制会话</span>';
+            return;
+        }
+        container.innerHTML = r.map((s, i) => {
+            const meta = s.metadata || {};
+            const extra = meta.snapshot_count
+                ? `${meta.snapshot_count}快照` : '无数据';
+            const checked = meta.snapshot_count ? 'checked' : '';
+            return `<label class="checkbox-item">
+                <input type="checkbox" value="${s.date}" ${checked}> ${s.date} (${extra})
+            </label>`;
+        }).join('');
+    } catch(e) { document.getElementById('sessionCheckboxes').innerHTML = '加载失败'; }
+}
+
+// ========== 策略加载 ==========
+async function loadStrategies() {
+    try {
+        const r = await fetch(`${API}/strategies`).then(r => r.json());
+        allStrategies = r;
+        document.getElementById('strategyCheckboxes').innerHTML = r.map(s =>
+            `<label class="checkbox-item">
+                <input type="checkbox" value="${s.name}" ${s.category !== 'intraday' ? 'checked' : ''}>
+                ${s.display}
+            </label>`
+        ).join('');
+    } catch(e) { document.getElementById('strategyCheckboxes').innerHTML = '加载失败'; }
+}
+
+// ========== 回放控制 ==========
+async function replayStart() {
+    const sessions = [...document.querySelectorAll('#sessionCheckboxes input:checked')].map(c => c.value);
+    const strategies = [...document.querySelectorAll('#strategyCheckboxes input:checked')].map(c => c.value);
+    if (!sessions.length) { alert('请选择至少一个交易日'); return; }
+    if (!strategies.length) { alert('请选择至少一个策略'); return; }
+    const capital = parseFloat(document.getElementById('initCapital').value) || 1000000;
+    const speed = parseFloat(document.getElementById('speedCustom').value) || 1;
+
+    document.getElementById('btnStart').disabled = true;
+    document.getElementById('replayStatus').textContent = '启动中...';
+
+    const r = await fetch(`${API}/replay/start`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ sessions, strategies, speed, initial_capital: capital }),
+    }).then(r => r.json());
+
+    document.getElementById('btnStart').disabled = false;
+    if (r.status === 'started') {
+        document.getElementById('btnStart').style.display = 'none';
+        document.getElementById('btnStop').style.display = '';
+        document.getElementById('replayStatus').textContent = '运行中';
+        document.getElementById('resultsArea').style.display = '';
+        buildResultTabs(strategies);
+        pollProgress();
+    } else if (r.status === 'already_running') {
+        document.getElementById('btnStart').style.display = 'none';
+        document.getElementById('btnStop').style.display = '';
+        document.getElementById('replayStatus').textContent = '已在运行，轮询中...';
+        document.getElementById('resultsArea').style.display = '';
+        pollProgress();
+    } else {
+        document.getElementById('replayStatus').textContent = '启动失败: ' + (r.detail || r.error || r.status || '未知错误');
+    }
+}
+
+async function replayStop() {
+    await fetch(`${API}/replay/stop`, {method: 'POST'});
+    document.getElementById('btnStart').style.display = '';
+    document.getElementById('btnStop').style.display = 'none';
+    document.getElementById('btnStart').disabled = false;
+    document.getElementById('replayStatus').textContent = '已停止';
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+}
+
+function replaySetSpeedBtn(speed) {
+    document.getElementById('speedCustom').value = speed;
+    fetch(`${API}/replay/speed?speed=${speed}`, {method: 'POST'});
+}
+
+function buildResultTabs(strategies) {
+    const tabContainer = document.getElementById('resultTabs');
+    const panelContainer = document.getElementById('strategyPanels');
+    // Keep alerts tab, rebuild strategy tabs
+    tabContainer.innerHTML = '<button class="tab-btn active" data-tab="alerts">🔔 告警检测</button>';
+    panelContainer.innerHTML = '';
+    strategies.forEach(name => {
+        const info = allStrategies.find(s => s.name === name);
+        const display = info ? info.display : name;
+        tabContainer.innerHTML += `<button class="tab-btn" data-tab="strat-${name}">📊 ${display}</button>`;
+        panelContainer.innerHTML += `
+            <div class="tab-content" id="tab-strat-${name}" style="padding-top:8px;">
+                <div id="strat-${name}-metrics" class="metric-row"></div>
+                <div class="scroll-table" style="max-height:450px;" id="strat-${name}-trades">-- 等待结果 --</div>
+            </div>`;
+    });
+    // Rebind tab clicks
+    tabContainer.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            tabContainer.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('#resultTabs ~ .tab-content, #strategyPanels .tab-content').forEach(p => p.classList.remove('active'));
+            btn.classList.add('active');
+            const tabId = btn.dataset.tab;
+            document.getElementById('tab-' + tabId).classList.add('active');
+        });
+    });
+    // First tab
+    document.getElementById('tab-alerts').classList.add('active');
+}
+
+// ========== 进度轮询 ==========
+let pollFailures = 0;
+function pollProgress() {
+    fetch(`${API}/replay/progress`).then(r => r.json()).then(p => {
+        pollFailures = 0;
+        document.getElementById('progressFill').style.width = (p.progress || 0) + '%';
+        document.getElementById('progressText').textContent =
+            `${Math.round(p.progress || 0)}%  第${p.current_day || 0}/${p.total_days || 0}天  ${p.current_time || ''}`;
+        refreshResults();
+        if (p.running) {
+            pollTimer = setTimeout(pollProgress, 2000);
+        } else {
+            document.getElementById('btnStart').style.display = '';
+            document.getElementById('btnStop').style.display = 'none';
+            document.getElementById('btnStart').disabled = false;
+            document.getElementById('replayStatus').textContent =
+                (p.progress >= 100) ? '✅ 完成' : '已停止';
+            refreshResults(true);
+        }
+    }).catch(() => {
+        pollFailures++;
+        if (pollFailures > 10) {
+            document.getElementById('replayStatus').textContent = '❌ 连接断开';
+            document.getElementById('btnStart').style.display = '';
+            document.getElementById('btnStop').style.display = 'none';
+            document.getElementById('btnStart').disabled = false;
+            return;
+        }
+        pollTimer = setTimeout(pollProgress, 3000);
+    });
+}
+
+// ========== 结果刷新 ==========
+async function refreshResults(final) {
+    try {
+        const r = await fetch(`${API}/replay/results`).then(r => r.json());
+        if (!r || r.status === 'not_run') return;
+
+        // Alerts
+        renderAlerts(r.alerts || [], r.alert_summary || {});
+        // Strategies
+        if (r.strategies) {
+            Object.entries(r.strategies).forEach(([name, data]) => {
+                renderStrategyResult(name, data, final);
+            });
+        }
+    } catch(e) {}
+}
+
+// ========== 告警渲染 ==========
+function renderAlerts(alerts, summary) {
+    const sumEl = document.getElementById('alertSummary');
+    if (Object.keys(summary).length) {
+        const typeLabels = {
+            'mad': 'MAD大单', 'orderbook/imbalance': '盘口失衡', 'divergence/price_up_sell_more': '背离(涨卖)',
+            'divergence/price_down_buy_more': '背离(跌买)', 'turnover/hot': '换手(热)', 'turnover/extreme': '换手(极端)',
+            'turnover/spike': '换手(突增)', 'orderbook/bid_ask_surge': '盘口挂单', 'orderbook/cancel': '盘口撤单',
+        };
+        const parts = Object.entries(summary).map(([k, v]) => {
+            const label = typeLabels[k] || k;
+            return `${label}: <strong>${v}</strong>`;
+        }).join(' &nbsp;|&nbsp; ');
+        sumEl.innerHTML = `共 <strong>${alerts.length}</strong> 条 &nbsp; ${parts}`;
+    } else {
+        sumEl.innerHTML = alerts.length ? `共 <strong>${alerts.length}</strong> 条` : '暂无告警';
+    }
+
+    const container = document.getElementById('alertTable');
+    if (!alerts.length) {
+        container.innerHTML = '<p class="text-dim" style="text-align:center;padding:40px;">-- 暂无告警 --</p>';
+        return;
+    }
+    const rows = alerts.slice(-200).reverse().map(a => {
+        const d = a.data || {};
+        const amt = d.amount ? `${(d.amount / 10000).toFixed(0)}万` : '';
+        const dir = a.direction === 'buy' ? '🟢' : (a.direction === 'sell' ? '🔴' : '🟡');
+        return `<tr>
+            <td>${a.date || ''}</td><td>${a.time || ''}</td><td>${a.code}</td><td>${a.name || ''}</td>
+            <td>${a.type}</td><td>${dir}</td><td>${amt}</td>
+        </tr>`;
+    }).join('');
+    container.innerHTML = `<table><thead><tr>
+        <th>日期</th><th>时间</th><th>代码</th><th>名称</th><th>类型</th><th>方向</th><th>金额</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// ========== 策略结果渲染 ==========
+function renderStrategyResult(name, data, final) {
+    const trades = data.trades || [];
+    const metrics = data.metrics || {};
+
+    // Metrics row
+    const mEl = document.getElementById(`strat-${name}-metrics`);
+    if (mEl && Object.keys(metrics).length) {
+        const totalReturn = ((metrics.total_return || 0) * 100).toFixed(2);
+        const annualReturn = ((metrics.annual_return || 0) * 100).toFixed(2);
+        const maxDD = ((metrics.max_drawdown || 0) * 100).toFixed(2);
+        const winRate = ((metrics.win_rate || 0) * 100).toFixed(1);
+        const sharpe = (metrics.sharpe_ratio || 0).toFixed(2);
+        const totalTrades = metrics.total_trades || 0;
+        mEl.innerHTML = `
+            <div class="metric-item"><div class="metric-val ${totalReturn >= 0 ? 'text-green' : 'text-red'}">${totalReturn}%</div><div class="metric-label">总收益</div></div>
+            <div class="metric-item"><div class="metric-val">${annualReturn}%</div><div class="metric-label">年化</div></div>
+            <div class="metric-item"><div class="metric-val text-red">${maxDD}%</div><div class="metric-label">最大回撤</div></div>
+            <div class="metric-item"><div class="metric-val">${winRate}%</div><div class="metric-label">胜率</div></div>
+            <div class="metric-item"><div class="metric-val">${sharpe}</div><div class="metric-label">夏普</div></div>
+            <div class="metric-item"><div class="metric-val">${totalTrades || trades.length}</div><div class="metric-label">交易笔数</div></div>`;
+    }
+
+    // Trades table
+    const tEl = document.getElementById(`strat-${name}-trades`);
+    if (!tEl) return;
+    if (!trades.length) {
+        tEl.innerHTML = `<p class="text-dim" style="text-align:center;padding:40px;">-- ${final ? '无交易信号' : '等待信号...'} --</p>`;
+        return;
+    }
+    const rows = trades.map(t => {
+        const isBuy = t.direction === 'BUY';
+        const profitStr = t.profit ? `${t.profit >= 0 ? '+' : ''}${(t.profit).toFixed(0)}` : '--';
+        const rateStr = t.profit_rate != null ? `${(t.profit_rate * 100).toFixed(2)}%` : '--';
+        const rateCls = (t.profit_rate || 0) >= 0 ? 'text-green' : 'text-red';
+        return `<tr>
+            <td>${t.date || ''}</td>
+            <td>${t.ts_code || ''}</td>
+            <td>${t.name || ''}</td>
+            <td><span class="tag ${isBuy ? 'tag-buy' : 'tag-sell'}">${isBuy ? '买入' : '卖出'}</span></td>
+            <td>${(t.price || 0).toFixed(2)}</td>
+            <td>${t.quantity || 0}</td>
+            <td>${((t.amount || 0) / 10000).toFixed(1)}万</td>
+            <td>${t.commission ? (t.commission).toFixed(0) : '--'}</td>
+            <td>${t.slippage ? (t.slippage).toFixed(0) : '--'}</td>
+            <td class="${rateCls}">${profitStr}</td>
+            <td class="${rateCls}">${rateStr}</td>
+            <td style="font-size:0.7rem;">${t.reason || ''}</td>
+        </tr>`;
+    }).join('');
+    tEl.innerHTML = `<table><thead><tr>
+        <th>日期</th><th>代码</th><th>名称</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th>
+        <th>佣金</th><th>滑点</th><th>盈亏</th><th>收益率</th><th>原因</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+</script>
+</body>
+</html>

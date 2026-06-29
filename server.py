@@ -455,6 +455,7 @@ app.mount("/static", StaticFiles(directory=web_dir), name="static")
 def _auto_record_on_startup():
     """启动时判断是否在交易时段，是则自动开始录制，收盘自动停止。"""
     try:
+        from test.replay_api import get_recorder
         from test.replay_recorder import RecordSession
         from datetime import datetime, time as dt_time
         now = datetime.now()
@@ -463,9 +464,12 @@ def _auto_record_on_startup():
         t = now.time()
         if not (dt_time(9, 25) <= t <= dt_time(15, 0)):
             return
-        recorder = RecordSession()
+        # 使用全局单例，确保 MonitorEngine 轮询能写入同一个实例
+        recorder = get_recorder()
         if not recorder.is_recording:
-            recorder.start([])  # 使用默认股票池
+            stock_pool = _load_stock_pool_codes()
+            codes = [c.split('.')[0] for c in stock_pool] if stock_pool else []
+            recorder.start(codes if codes else [])
             logger.info('[AutoRecord] 开盘自动录制已启动')
 
         # 后台线程等待收盘自动停止
@@ -484,16 +488,36 @@ def _auto_record_on_startup():
         logger.warning(f'[AutoRecord] 启动失败: {e}')
 
 
+def _load_stock_pool_codes() -> list:
+    """从 stock_pool 配置文件加载股票代码列表"""
+    import json, os
+    pool_file = os.path.join(DATA_CACHE_DIR, 'live_stock_pool.json')
+    try:
+        if os.path.exists(pool_file):
+            with open(pool_file, 'r', encoding='utf-8') as f:
+                pool = json.load(f)
+            codes = [f"{item['code']}.{'SH' if item['code'].startswith('6') else 'SZ'}"
+                     for item in pool if 'code' in item]
+            return codes
+    except Exception:
+        pass
+    # fallback: 返回空列表，不阻塞启动
+    return []
+
+
 def sync_kline_to_latest():
-    """启动时自动同步日线+分钟线到最新交易日，含衍生指标计算。"""
+    """启动时自动同步 stock_pool 内股票的日线+分钟线到最新交易日。"""
     try:
         from datetime import datetime, timedelta
+        codes = _load_stock_pool_codes()
+        if not codes:
+            logger.info('[Startup] 未加载到 stock_pool，跳过 K 线同步')
+            return
         latest_date = db._conn.execute('SELECT MAX(trade_date) FROM daily_bars').fetchone()[0]
         today = datetime.now().strftime('%Y%m%d')
         if not latest_date or latest_date < today:
             start = (datetime.strptime(latest_date, '%Y%m%d') + timedelta(days=1)).strftime('%Y%m%d') if latest_date else '20240101'
-            codes = [r['ts_code'] for r in db._conn.execute('SELECT ts_code FROM stock_info').fetchall()]
-            logger.info(f'[Startup] K线同步: {start} → {today}, {len(codes)} 只')
+            logger.info(f'[Startup] K线同步: {start} → {today}, {len(codes)} 只 (仅 stock_pool)')
             svc = DataSyncService(db, fetcher._primary)
             result = svc.sync_daily_bars(codes, start, today)
             logger.info(f'[Startup] 日线: {result}')
@@ -504,7 +528,6 @@ def sync_kline_to_latest():
             (f'{today[:4]}-{today[4:6]}-{today[6:8]}%',)
         ).fetchone()[0]
         if today_count == 0:
-            codes = [r['ts_code'] for r in db._conn.execute('SELECT ts_code FROM stock_info').fetchall()]
             svc = DataSyncService(db, fetcher._primary)
             svc.sync_minute_bars(codes, today, period='1')
             logger.info(f'[Startup] 分钟线已同步: {today}')
@@ -1092,6 +1115,7 @@ async def sync_pool_to_live(req: SyncPoolToLiveRequest):
             industry = '未知'
         result.append({'code': code, 'name': name, 'industry': industry})
 
+    result = _fill_stock_pool_details(result, use_remote=True)
     _save_stock_pool(result)
     _sync_stock_pool_to_config()
 
@@ -1785,23 +1809,142 @@ async def live_reset():
 # 股票池持久化文件
 STOCK_POOL_FILE = BASE_DIR / "data_cache" / "live_stock_pool.json"
 
-def _load_stock_pool() -> List[dict]:
-    """从文件加载股票池"""
-    if STOCK_POOL_FILE.exists():
-        try:
-            with open(STOCK_POOL_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            pass
-    # 从配置读取默认值
-    default_codes = LIVE_TRADING_CONFIG.get('scan', {}).get('stock_pool', [])
-    return [{'code': c, 'name': '', 'industry': ''} for c in default_codes]
+STOCK_NAME_FALLBACKS = {
+    '600030': ('中信证券', '证券'),
+    '600036': ('招商银行', '银行'),
+    '600276': ('恒瑞医药', '医药生物'),
+    '600887': ('伊利股份', '食品饮料'),
+    '601166': ('兴业银行', '银行'),
+    '601318': ('中国平安', '保险'),
+}
 
 def _save_stock_pool(pool: List[dict]):
     """保存股票池到文件"""
     STOCK_POOL_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(STOCK_POOL_FILE, 'w', encoding='utf-8') as f:
-        json.dump(pool, f, indent=2, ensure_ascii=False)
+        json.dump(_normalize_stock_pool(pool), f, indent=2, ensure_ascii=False)
+
+
+def _plain_stock_code(value) -> str:
+    """Return a plain six-digit stock code when possible."""
+    code = str(value or '').strip()
+    if '.' in code:
+        code = code.split('.', 1)[0]
+    return code
+
+
+def _to_ts_code(code: str) -> str:
+    code = _plain_stock_code(code)
+    if code.isdigit() and len(code) == 6:
+        return f"{code}.SH" if code.startswith('6') else f"{code}.SZ"
+    return code
+
+
+def _normalize_stock_pool(pool) -> List[dict]:
+    """Accept old pool formats and return [{code, name, industry}, ...]."""
+    normalized = []
+    for item in pool or []:
+        if isinstance(item, dict):
+            code = _plain_stock_code(item.get('code') or item.get('ts_code'))
+            stock = dict(item)
+        else:
+            code = _plain_stock_code(item)
+            stock = {}
+
+        if not code:
+            continue
+
+        stock['code'] = code
+        stock.setdefault('name', '')
+        stock.setdefault('industry', '')
+        normalized.append(stock)
+
+    return normalized
+
+
+def _fill_stock_pool_details(pool: List[dict], use_remote: bool = False) -> List[dict]:
+    """Fill stock names from local stock_info first, then optionally remote data."""
+    pool = _normalize_stock_pool(pool)
+    if not pool:
+        return pool
+
+    local_db = globals().get('db')
+    created_db = None
+    if local_db is None:
+        try:
+            created_db = SQLiteManager()
+            local_db = created_db
+        except Exception:
+            local_db = None
+
+    try:
+        for item in pool:
+            code = item.get('code', '')
+            name = str(item.get('name') or '').strip()
+            industry = str(item.get('industry') or '').strip()
+            needs_name = not name or name == code
+            needs_industry = not industry
+
+            if local_db and (needs_name or needs_industry):
+                try:
+                    info = local_db.get_stock_info(_to_ts_code(code)) or {}
+                    if needs_name and info.get('name'):
+                        item['name'] = info.get('name')
+                        name = item['name']
+                        needs_name = False
+                    if needs_industry and info.get('industry'):
+                        item['industry'] = info.get('industry')
+                        industry = item['industry']
+                        needs_industry = False
+                except Exception:
+                    pass
+
+            fallback = STOCK_NAME_FALLBACKS.get(code)
+            if fallback and (needs_name or needs_industry):
+                if needs_name:
+                    item['name'] = fallback[0]
+                    name = item['name']
+                    needs_name = False
+                if needs_industry:
+                    item['industry'] = fallback[1]
+                    industry = item['industry']
+                    needs_industry = False
+
+            if use_remote and (needs_name or needs_industry):
+                try:
+                    info = data_fetcher.get_stock_info(code)
+                    if needs_name:
+                        item['name'] = info.get('name', code)
+                    if needs_industry:
+                        item['industry'] = info.get('industry', '\u672a\u77e5')
+                except Exception:
+                    if not item.get('name'):
+                        item['name'] = code
+                    if not item.get('industry'):
+                        item['industry'] = '\u672a\u77e5'
+    finally:
+        if created_db is not None:
+            created_db.close()
+
+    return pool
+
+
+def _load_stock_pool(enrich: bool = True) -> List[dict]:
+    """Load the live stock pool and fill names from local stock_info."""
+    pool = None
+    if STOCK_POOL_FILE.exists():
+        try:
+            with open(STOCK_POOL_FILE, 'r', encoding='utf-8') as f:
+                pool = json.load(f)
+        except Exception:
+            pool = None
+
+    if pool is None:
+        default_codes = LIVE_TRADING_CONFIG.get('scan', {}).get('stock_pool', [])
+        pool = [{'code': c, 'name': '', 'industry': ''} for c in default_codes]
+
+    pool = _normalize_stock_pool(pool)
+    return _fill_stock_pool_details(pool) if enrich else pool
 
 def _sync_stock_pool_to_config():
     """同步股票池代码到 live_server 配置"""
@@ -1873,14 +2016,18 @@ async def add_stock_to_pool(item: StockPoolItem):
             name = code
             industry = '未知'
 
-    pool.append({'code': code, 'name': name, 'industry': industry})
+    new_item = _fill_stock_pool_details(
+        [{'code': code, 'name': name, 'industry': industry}],
+        use_remote=True,
+    )[0]
+    pool.append(new_item)
     _save_stock_pool(pool)
     _sync_stock_pool_to_config()
 
     return {
         "status": "success",
-        "data": {"code": code, "name": name, "industry": industry},
-        "message": f"已添加 {code} {name}"
+        "data": new_item,
+        "message": f"已添加 {code} {new_item.get('name', code)}"
     }
 
 
@@ -1926,6 +2073,7 @@ async def import_stock_pool(pool: List[StockPoolItem]):
     if not result:
         return {"status": "error", "message": "没有有效的股票代码"}
 
+    result = _fill_stock_pool_details(result, use_remote=True)
     _save_stock_pool(result)
     _sync_stock_pool_to_config()
 
@@ -1971,6 +2119,7 @@ async def import_stock_pool_text(req: StockPoolTextImport):
     if not result:
         return {"status": "error", "message": "没有有效的股票代码"}
 
+    result = _fill_stock_pool_details(result, use_remote=True)
     _save_stock_pool(result)
     _sync_stock_pool_to_config()
 
@@ -2195,7 +2344,15 @@ async def watcher_status():
     """获取盯盘状态"""
     from broker.market_watcher import MarketWatcherEngine
     engine = MarketWatcherEngine.get_instance()
-    return {"running": engine.is_running}
+    snapshot = engine.get_snapshot()
+    return {
+        "running": engine.is_running,
+        "stock_count": snapshot.get("stock_count", 0),
+        "poll_count": snapshot.get("poll_count", 0),
+        "stats": snapshot.get("stats", {}),
+        "recent_alert_count": len(snapshot.get("recent_alerts", [])),
+        "pool_snapshot_count": len(snapshot.get("pool_snapshot", [])),
+    }
 
 
 @app.get("/api/watcher/stream")
@@ -2207,6 +2364,28 @@ async def watcher_stream():
 
     async def event_gen():
         try:
+            snapshot = engine.get_snapshot()
+            if snapshot.get("pool_snapshot"):
+                yield "data: " + json.dumps({
+                    "type": "pool_snapshot",
+                    "data": snapshot["pool_snapshot"],
+                }, ensure_ascii=False, default=str) + "\n\n"
+            if snapshot.get("sector_heatmap"):
+                yield "data: " + json.dumps({
+                    "type": "sector_heatmap",
+                    "data": snapshot["sector_heatmap"],
+                }, ensure_ascii=False, default=str) + "\n\n"
+            if snapshot.get("stats"):
+                yield "data: " + json.dumps({
+                    "type": "stats",
+                    "data": snapshot["stats"],
+                }, ensure_ascii=False, default=str) + "\n\n"
+            for alert in snapshot.get("recent_alerts", [])[-500:]:
+                yield "data: " + json.dumps({
+                    "type": "alert",
+                    "data": alert,
+                }, ensure_ascii=False, default=str) + "\n\n"
+
             while True:
                 try:
                     data = await asyncio.wait_for(queue.get(), timeout=30.0)

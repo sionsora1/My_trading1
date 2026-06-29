@@ -614,7 +614,7 @@ class MonitorEngine:
         self._stock_pool: List[str] = []
         self._interval: float = 5.0
         self._fund_interval: float = 60.0
-        self._max_alerts: int = 500
+        self._max_alerts: int = 2000
         self._max_per_cycle: int = 10
         self._baseline_days: int = 20
 
@@ -1054,10 +1054,14 @@ class MonitorEngine:
                         rec.stop()
                         from test.replay_recorder import RecordSession
                         RecordSession.cleanup_old(max_days=5)
+                        logger.info(f'[录制] 收盘自动停止')
                     else:
                         rec.record_snapshots(curr)
-            except Exception:
-                pass
+                        poll_n = getattr(self, '_poll_count', 0)
+                        if poll_n <= 5 or poll_n % 10 == 0:
+                            logger.info(f'[录制] 第{poll_n}轮 写入{len(curr)}只, 累计{rec.snapshot_count}条')
+            except Exception as e:
+                logger.error(f'[录制] 写入异常: {e}', exc_info=True)
 
             self._last_poll_at = datetime.now().isoformat()
 

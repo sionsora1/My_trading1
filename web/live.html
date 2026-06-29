@@ -472,6 +472,12 @@
                         <p class="text-dim" style="text-align:center;padding:40px;">-- 请启动盯盘 --</p>
                     </div>
                 </div>
+
+                <!-- Replay link -->
+                <div style="margin-top:8px;font-size:0.8rem;">
+                    <a href="/replay.html" style="color:var(--blue);">🔄 回放测试台 →</a>
+                </div>
+            </div>
             </div>
         </div>
 
@@ -1286,9 +1292,9 @@
                             break;
                         case 'alert':
                             const a = msg.data;
-                            if (a.type && a.type.includes('surge')) { surgeAlerts.unshift(a); if (surgeAlerts.length > 50) surgeAlerts.pop(); }
-                            if (a.type && (a.type.includes('flow') || a.type.includes('inflow') || a.type.includes('outflow'))) { flowAlerts.unshift(a); if (flowAlerts.length > 50) flowAlerts.pop(); }
-                            if (a.type && a.type.includes('limit')) { limitAlerts.unshift(a); if (limitAlerts.length > 100) limitAlerts.pop(); }
+                            if (a.type && a.type.includes('surge')) { surgeAlerts.unshift(a); if (surgeAlerts.length > 300) surgeAlerts.pop(); }
+                            if (a.type && (a.type.includes('flow') || a.type.includes('inflow') || a.type.includes('outflow'))) { flowAlerts.unshift(a); if (flowAlerts.length > 300) flowAlerts.pop(); }
+                            if (a.type && a.type.includes('limit')) { limitAlerts.unshift(a); if (limitAlerts.length > 500) limitAlerts.pop(); }
                             renderWatcherContent();
                             break;
                         case 'sector_heatmap':
@@ -1352,7 +1358,7 @@
                 return;
             }
             let html = '';
-            limitAlerts.slice(0, 30).forEach(a => {
+            limitAlerts.slice(0, 100).forEach(a => {
                 const isUp = a.type === 'limit_up';
                 html += `<div class="signal-row ${isUp ? 'signal-buy' : 'signal-sell'}">
                     <div class="signal-info">
@@ -1368,7 +1374,7 @@
 
         function renderWatcherSurge() {
             const container = document.getElementById('watcherContent');
-            const all = [...surgeAlerts].slice(0, 30);
+            const all = [...surgeAlerts].slice(0, 100);
             if (!all.length) {
                 container.innerHTML = '<p class="text-dim" style="text-align:center;padding:40px;">-- 暂无异常波动 --</p>';
                 return;
@@ -1384,7 +1390,7 @@
 
         function renderWatcherFlow() {
             const container = document.getElementById('watcherContent');
-            const all = [...flowAlerts].slice(0, 30);
+            const all = [...flowAlerts].slice(0, 100);
             if (!all.length) {
                 container.innerHTML = '<p class="text-dim" style="text-align:center;padding:40px;">-- 暂无资金流告警 --</p>';
                 return;
@@ -1410,7 +1416,7 @@
                 <table class="data-table"><thead><tr>
                     <th>板块</th><th>均涨幅</th><th>资金流向</th><th>领涨股</th>
                 </tr></thead><tbody>`;
-                sectors.slice(0, 15).forEach(s => {
+                sectors.slice(0, 30).forEach(s => {
                     const pct = s.change_pct || 0;
                     const pctColor = pct > 0 ? 'var(--green)' : (pct < 0 ? 'var(--red)' : '');
                     const flow = s.net_flow || 0;
@@ -1437,7 +1443,7 @@
                 '</div>';
         }
 
-        // ========== Init ==========
+
         document.addEventListener('DOMContentLoaded', () => {
             refreshAll();
             refreshPositions();

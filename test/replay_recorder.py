@@ -46,6 +46,14 @@ class RecordSession:
         session.record_fund_flow(code, flow_data)
     """
 
+    _instance = None  # 全局单例
+
+    @classmethod
+    def get_instance(cls) -> 'RecordSession':
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
     def __init__(self):
         self._lock = threading.Lock()
         self._date: str = ''
@@ -54,6 +62,8 @@ class RecordSession:
         self._snapshot_count: int = 0
         self._minute_count: int = 0
         self._fund_count: int = 0
+        self._poll_thread: Optional[threading.Thread] = None
+        self._poll_stop: threading.Event = threading.Event()
 
         # File handles
         self._snap_fh = None
@@ -105,11 +115,21 @@ class RecordSession:
             self._minute_fh = open(os.path.join(self._session_dir, 'minute_bars.jsonl'), 'a', encoding='utf-8')
             self._fund_fh = open(os.path.join(self._session_dir, 'fund_flow.jsonl'), 'a', encoding='utf-8')
 
+            self._poll_stop.clear()
+            self._poll_thread = threading.Thread(
+                target=self._poll_snapshots, daemon=True, name='record-poll')
+            self._poll_thread.start()
+
             logger.info(f'录制开始: {self._session_dir}, {len(stock_pool)} 只股票')
             return {'status': 'started', 'dir': self._session_dir}
 
     def stop(self) -> Dict[str, Any]:
         """停止录制并保存元数据。"""
+        # 先停轮询线程
+        self._poll_stop.set()
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=5.0)
+
         with self._lock:
             if not self.is_recording:
                 return {'status': 'not_recording'}
@@ -140,7 +160,42 @@ class RecordSession:
             return {'status': 'stopped', 'metadata': metadata}
 
     # ------------------------------------------------------------------
-    # 录制方法
+    # 独立轮询线程（不依赖 MonitorEngine）
+    # ------------------------------------------------------------------
+
+    def _poll_snapshots(self) -> None:
+        """独立 daemon 线程：每 3 秒拉 TDX 快照写入录制文件。"""
+        from broker.monitor import TDXQuotesPoller
+        poller = TDXQuotesPoller()
+        logger.info(f'[录制轮询] 启动: {len(self._stock_pool)} 只股票')
+
+        while not self._poll_stop.is_set():
+            if not TDXQuotesPoller.is_trading_time():
+                time.sleep(30)
+                continue
+
+            try:
+                curr = poller.poll(self._stock_pool)
+            except Exception as e:
+                logger.debug(f'[录制轮询] TDX 异常: {e}')
+                time.sleep(10)
+                continue
+
+            if not curr:
+                time.sleep(3)
+                continue
+
+            try:
+                self.record_snapshots(curr)
+            except Exception as e:
+                logger.debug(f'[录制轮询] 写入异常: {e}')
+
+            time.sleep(3)
+
+        logger.info(f'[录制轮询] 停止: 共 {self._snapshot_count} 条快照')
+
+    # ------------------------------------------------------------------
+    # 录制方法（供 MonitorEngine 等外部调用，兼容旧逻辑）
     # ------------------------------------------------------------------
 
     def record_snapshots(self, snapshots: Dict[str, Any]) -> None:

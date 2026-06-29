@@ -658,7 +658,7 @@ class MarketWatcherEngine:
         self._recent_alerts: List[dict] = []
         self._last_sector_data: Dict[str, Any] = {}
         self._last_stats: Dict[str, Any] = {}
-        self._max_recent_alerts: int = 200
+        self._max_recent_alerts: int = 1000
 
         logger.info("MarketWatcher 初始化完成")
 
