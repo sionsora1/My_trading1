@@ -139,15 +139,18 @@ class ReplayEngine:
             # 2. 构建 market_data_by_date（流式：逐日加载快照 → 聚合）
             self._build_market_data()
 
-            # 3. 跑检测器告警（逐日加载快照）
-            self._run_detectors()
-
-            # 4. 对每个策略跑回测
+            # 3. 先跑策略回测（快，秒级），让交易结果立即可见
             for name in strategies:
+                if self._stop_event.is_set():
+                    break
                 self._run_strategy_backtest(
                     name, initial_capital, commission_rate,
                     slippage_rate, stop_loss_rate, min_commission, max_positions,
                 )
+            self._progress = 0.5  # 策略完成 = 50%
+
+            # 4. 跑检测器告警（慢，逐快照处理）
+            self._run_detectors()
 
             self._progress = 1.0
             return self.get_results()
@@ -253,7 +256,7 @@ class ReplayEngine:
                 break
 
             self._current_day = day_idx + 1
-            self._progress = day_idx / max(self._total_days, 1) * 0.5  # 前 50% 进度
+            self._progress = day_idx / max(self._total_days, 1) * 0.5  # 0~50%: 构建市场数据
 
             # 加载当天快照
             snapshots = self._load_snapshots_streaming(session)
@@ -476,14 +479,20 @@ class ReplayEngine:
             if self._stop_event.is_set():
                 break
 
-            self._progress = 0.5 + (day_idx / max(self._total_days, 1)) * 0.3  # 50%~80%
-
             snap_path = os.path.join(session.dir, 'snapshots.jsonl')
             if not os.path.isfile(snap_path):
                 continue
 
-            # 流式读取，每批 20 条推进
+            # 先统计行数
+            total_lines = 0
+            with open(snap_path, 'r', encoding='utf-8') as f:
+                for _ in f:
+                    total_lines += 1
+
+            # 流式读取，每批 200 条推进，同步更新进度 + 模拟真实速度
             batch: List[dict] = []
+            processed = 0
+            last_batch_ts: float = 0
             with open(snap_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
@@ -492,9 +501,25 @@ class ReplayEngine:
                     try:
                         s = json.loads(line)
                         batch.append(s)
-                        if len(batch) >= 20:
+                        processed += 1
+                        if len(batch) >= 200:
                             self._feed_detector_batch(batch, session.date)
+                            # 取批次中最后一条的时间作为模拟时钟
+                            last_time = batch[-1].get('time', '') if batch else ''
+                            if last_time:
+                                self._current_time_str = f'{session.date} {last_time}'
+                            # 模拟真实速度：根据时间间隔 / speed 延迟
+                            batch_ts = batch[-1].get('ts', 0) if batch else 0
+                            if last_batch_ts > 0 and batch_ts > last_batch_ts and self._speed > 0:
+                                real_gap = batch_ts - last_batch_ts
+                                sim_delay = real_gap / self._speed
+                                if sim_delay > 0:
+                                    time.sleep(min(sim_delay, 2.0))  # 单次最多睡2秒, 避免卡太久
+                            last_batch_ts = batch_ts
                             batch = []
+                            if total_lines > 0:
+                                day_progress = processed / total_lines
+                                self._progress = 0.5 + (day_idx + day_progress) / max(self._total_days, 1) * 0.5
                             if self._stop_event.is_set():
                                 break
                     except json.JSONDecodeError:
@@ -648,17 +673,25 @@ class ReplayEngine:
 
     def _serialize_trade(self, record) -> dict:
         """序列化 TradeRecord 为 JSON 安全的 dict。"""
+        ts_code = getattr(record, 'ts_code', '')
         side = getattr(record, 'side', '')
+        # 从 stock_info 映射补名称（TradeRecord 不含 name）
+        code = ts_code.split('.')[0] if '.' in ts_code else ts_code
+        stock_name = self._stock_names.get(code, '')
+        trade_date = getattr(record, 'trade_date', '')
+        # 日频策略，交易时间为当日 15:00（收盘执行）
+        trade_time = f'{trade_date} 09:30:00' if trade_date else ''
         return {
-            'ts_code': getattr(record, 'ts_code', ''),
-            'name': getattr(record, 'name', ''),
+            'ts_code': ts_code,
+            'name': stock_name,
             'direction': side,  # 'BUY' / 'SELL'
             'price': getattr(record, 'price', 0),
             'quantity': getattr(record, 'quantity', 0),
             'amount': getattr(record, 'amount', 0),
             'commission': getattr(record, 'commission', 0),
             'slippage': getattr(record, 'slippage', 0),
-            'date': getattr(record, 'trade_date', ''),
+            'date': trade_date,
+            'time': trade_time,
             'reason': getattr(record, 'reason', ''),
         }
 
@@ -676,8 +709,24 @@ class ReplayEngine:
             'progress': round(self._progress * 100, 1),
             'alert_summary': self.get_alert_summary(),
             'alerts': self.get_alerts(),
-            'strategies': self._strategy_results,
+            'strategies': self._sanitize_results(self._strategy_results),
         }
+
+    @staticmethod
+    def _sanitize_results(results: dict) -> dict:
+        """递归替换 NaN/Infinity 为 JSON 安全值。"""
+        import math
+        def _clean(v):
+            if isinstance(v, float):
+                if math.isnan(v) or math.isinf(v):
+                    return 0.0
+                return v
+            if isinstance(v, dict):
+                return {k: _clean(vv) for k, vv in v.items()}
+            if isinstance(v, list):
+                return [_clean(vv) for vv in v]
+            return v
+        return _clean(results)
 
     def get_alerts(self, limit: int = 500) -> List[dict]:
         """获取检测器告警。"""
@@ -691,6 +740,11 @@ class ReplayEngine:
 
     def get_progress(self) -> Dict[str, Any]:
         """回放进度。"""
+        # 计算模拟结束时间
+        end_time = ''
+        if self._sessions:
+            last_date = self._sessions[-1].date
+            end_time = f'{last_date} 15:00:00'
         return {
             'running': self.is_running,
             'speed': self._speed,
@@ -698,6 +752,8 @@ class ReplayEngine:
             'current_day': self._current_day,
             'total_days': self._total_days,
             'current_time': self._current_time_str,
+            'end_time': end_time,
+            'days': [s.date for s in self._sessions],
             'alerts': len(self._monitor_alerts),
             'strategies': {
                 name: {

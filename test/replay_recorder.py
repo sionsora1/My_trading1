@@ -186,6 +186,7 @@ class RecordSession:
         except Exception:
             pass
 
+        poll_round = 0
         while not self._poll_stop.is_set():
             if not TDXQuotesPoller.is_trading_time():
                 time.sleep(30)
@@ -212,9 +213,63 @@ class RecordSession:
             except Exception as e:
                 logger.debug(f'[录制轮询] 写入异常: {e}')
 
+            # 每 60 秒拉一次分钟 K 线（每 20 轮，3秒/轮）
+            poll_round += 1
+            if poll_round % 20 == 0:
+                self._fetch_minute_bars(poller)
+
             time.sleep(3)
 
         logger.info(f'[录制轮询] 停止: 共 {self._snapshot_count} 条快照')
+
+    def _fetch_minute_bars(self, poller) -> None:
+        """拉取今日分钟 K 线并写入录制文件（每 60 秒调用一次）。"""
+        if not self.is_recording:
+            return
+        try:
+            from pytdx.hq import TdxHq_API
+            api = TdxHq_API(auto_retry=True, raise_exception=False)
+            market_map = {'6': 1, '0': 0, '3': 0}
+            today_str = datetime.now().strftime('%Y%m%d')
+            count = 0
+
+            for code in self._stock_pool:
+                if self._poll_stop.is_set():
+                    break
+                market = market_map.get(code[0], 0)
+                try:
+                    bars = api.get_security_bars(9, market, code, 0, 240)
+                    if bars:
+                        # 标准化 TDX 字段名 → 通用格式
+                        normalized = []
+                        for b in bars:
+                            bar_time = str(b.get('datetime', ''))
+                            if bar_time[:8] != today_str:
+                                continue
+                            normalized.append({
+                                'trade_time': bar_time,
+                                'open': float(b.get('open', 0) or 0),
+                                'high': float(b.get('high', 0) or 0),
+                                'low': float(b.get('low', 0) or 0),
+                                'close': float(b.get('close', 0) or 0),
+                                'volume': float(b.get('vol', 0) or 0),
+                                'amount': float(b.get('amount', 0) or 0),
+                            })
+                        if normalized:
+                            self.record_minute_bars(code, normalized)
+                            count += 1
+                except Exception:
+                    pass
+                time.sleep(0.05)  # 每只间隔 50ms，避免 TDX 限流
+
+            try:
+                api.disconnect()
+            except Exception:
+                pass
+            if count > 0:
+                logger.debug(f'[录制轮询] 分钟线: {count}/{len(self._stock_pool)} 只, 累计 {self._minute_count} 条')
+        except Exception as e:
+            logger.debug(f'[录制轮询] 分钟线拉取异常: {e}')
 
     # ------------------------------------------------------------------
     # 录制方法（供 MonitorEngine 等外部调用，兼容旧逻辑）
