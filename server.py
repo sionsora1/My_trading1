@@ -453,37 +453,35 @@ app.mount("/static", StaticFiles(directory=web_dir), name="static")
 
 
 def _auto_record_on_startup():
-    """启动时判断是否在交易时段，是则自动开始录制，收盘自动停止。"""
+    """后台守护线程：每天自动在交易时段开始录制，收盘自动停止。"""
     try:
         from test.replay_api import get_recorder
         from test.replay_recorder import RecordSession
         from datetime import datetime, time as dt_time
-        now = datetime.now()
-        if now.weekday() >= 5:
-            return
-        t = now.time()
-        if not (dt_time(9, 25) <= t <= dt_time(15, 0)):
-            return
-        # 使用全局单例，确保 MonitorEngine 轮询能写入同一个实例
-        recorder = get_recorder()
-        if not recorder.is_recording:
-            stock_pool = _load_stock_pool_codes()
-            codes = [c.split('.')[0] for c in stock_pool] if stock_pool else []
-            recorder.start(codes if codes else [])
-            logger.info('[AutoRecord] 开盘自动录制已启动')
-
-        # 后台线程等待收盘自动停止
         import threading
-        def _wait_and_stop():
-            while recorder.is_recording:
-                now2 = datetime.now()
-                if now2.time() > dt_time(15, 5) or now2.weekday() >= 5:
-                    recorder.stop()
-                    RecordSession.cleanup_old(max_days=5)
-                    logger.info('[AutoRecord] 收盘自动停止录制')
-                    break
-                time.sleep(60)
-        threading.Thread(target=_wait_and_stop, daemon=True, name='auto-record-stop').start()
+
+        def _auto_record_daemon():
+            recorder = get_recorder()
+            while True:
+                try:
+                    now = datetime.now()
+                    if now.weekday() < 5 and dt_time(9, 25) <= now.time() <= dt_time(15, 0):
+                        if not recorder.is_recording:
+                            stock_pool = _load_stock_pool_codes()
+                            codes = [c.split('.')[0] for c in stock_pool] if stock_pool else []
+                            recorder.start(codes if codes else [])
+                            logger.info('[AutoRecord] 开盘自动录制已启动')
+                    elif now.time() > dt_time(15, 5) or now.weekday() >= 5:
+                        if recorder.is_recording:
+                            recorder.stop()
+                            RecordSession.cleanup_old(max_days=5)
+                            logger.info('[AutoRecord] 收盘自动停止录制')
+                except Exception:
+                    pass
+                time.sleep(30)
+
+        threading.Thread(target=_auto_record_daemon, daemon=True, name='auto-record').start()
+        logger.info('[AutoRecord] 自动录制守护线程已启动')
     except Exception as e:
         logger.warning(f'[AutoRecord] 启动失败: {e}')
 
