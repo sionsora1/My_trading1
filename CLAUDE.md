@@ -99,6 +99,11 @@ market_data = {
 - Errors → `logger.error(..., exc_info=True)` with full traceback.
 - Absolute order threshold is 2000万/3s + 1亿/60s.
 
+### Code Change & Push Rules (Non-negotiable)
+
+- **Never modify code without explicit user permission.** Always explain the issue and proposed fix first, wait for user approval before editing.
+- **Never commit or push without explicit user permission.** Wait for user to say "commit", "push", "提交" or similar before any git operations.
+
 ### Development Workflow (Mandatory — scaled to task size)
 
 **核心原则：任何代码改动前，必须先走流程，不能跳过直接写代码。**
