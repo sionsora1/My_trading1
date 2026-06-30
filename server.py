@@ -453,11 +453,18 @@ app.mount("/static", StaticFiles(directory=web_dir), name="static")
 
 
 def _auto_record_on_startup():
-    """后台守护线程：每天自动在交易时段开始录制，收盘自动停止。"""
+    """后台守护线程：每天自动在交易时段开始录制，收盘自动停止。
+
+    单守护线程循环检查，覆盖所有启动场景：
+    - 盘前启动 → 等到9:25自动开始
+    - 盘中启动 → 立即开始
+    - 收盘 → 自动停止 + 清理旧数据
+    """
     try:
         from test.replay_api import get_recorder
         from test.replay_recorder import RecordSession
         from datetime import datetime, time as dt_time
+        import time as _time
         import threading
 
         def _auto_record_daemon():
@@ -465,6 +472,7 @@ def _auto_record_on_startup():
             while True:
                 try:
                     now = datetime.now()
+                    # 交易时段 9:25-15:00 → 确保录制中
                     if now.weekday() < 5 and dt_time(9, 25) <= now.time() <= dt_time(15, 0):
                         if not recorder.is_recording:
                             stock_pool = _load_stock_pool_codes()
@@ -474,6 +482,7 @@ def _auto_record_on_startup():
                                 logger.info('[AutoRecord] 开盘自动录制已启动')
                             else:
                                 logger.warning('[AutoRecord] 股票池为空，跳过录制')
+                    # 收盘后 15:05 或非交易日 → 停止录制
                     elif now.time() > dt_time(15, 5) or now.weekday() >= 5:
                         if recorder.is_recording:
                             recorder.stop()
@@ -481,7 +490,7 @@ def _auto_record_on_startup():
                             logger.info('[AutoRecord] 收盘自动停止录制')
                 except Exception as e:
                     logger.error(f'[AutoRecord] 守护异常: {e}', exc_info=True)
-                time.sleep(30)
+                _time.sleep(30)
 
         threading.Thread(target=_auto_record_daemon, daemon=True, name='auto-record').start()
         logger.info('[AutoRecord] 自动录制守护线程已启动')
