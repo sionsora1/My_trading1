@@ -31,7 +31,7 @@ import queue
 import random
 import statistics
 import threading
-import time
+import time as _time_module
 from dataclasses import dataclass
 from datetime import datetime, timedelta, time
 from typing import Any, Dict, List, Optional, Tuple
@@ -267,10 +267,10 @@ class EastMoneyFundPoller:
 
     def _rate_limit(self) -> None:
         """确保请求间隔 >= min_interval。"""
-        elapsed = time.time() - self._last_request
+        elapsed = _time_module.time() - self._last_request
         if elapsed < self._min_interval:
-            time.sleep(self._min_interval - elapsed + random.uniform(0, 1))
-        self._last_request = time.time()
+            _time_module.sleep(self._min_interval - elapsed + random.uniform(0, 1))
+        self._last_request = _time_module.time()
 
     def _make_secid(self, code: str) -> str:
         """纯数字代码 → 东方财富 secid 格式。"""
@@ -391,7 +391,7 @@ class Detector:
         if code not in self._windows:
             self._windows[code] = []
         window = self._windows[code]
-        now = time.time()
+        now = _time_module.time()
         window.append((now, delta_amt, delta_vol, delta_buy, delta_sell))
         # 清理过期数据（超过 60 秒）
         self._windows[code] = [(t, a, v, b, s) for t, a, v, b, s in window
@@ -443,7 +443,7 @@ class Detector:
         median_ratio = delta_amt / median if median > 0 else delta_amt
 
         # 检测冷却
-        now = time.time()
+        now = _time_module.time()
         last = self._cooldowns.get(code, 0)
         if now - last < self.COOLDOWN_SEC:
             return None
@@ -463,7 +463,7 @@ class Detector:
 
     def mark_alerted(self, code: str) -> None:
         """记录冷却时间。"""
-        self._cooldowns[code] = time.time()
+        self._cooldowns[code] = _time_module.time()
 
     def get_window_info(self, code: str) -> dict:
         """获取滑窗统计信息（调试用）。"""
@@ -867,7 +867,7 @@ class MonitorEngine:
         pct_to = cfg.get('pct_jump_to', 5.0)
 
         alerts: List[AnomalyAlert] = []
-        now = time.time()
+        now = _time_module.time()
         now_str = datetime.now().strftime('%H:%M:%S')
         cooldown_sec = cfg.get('cooldown_sec', 60)
 
@@ -1033,14 +1033,14 @@ class MonitorEngine:
 
         while self._running.is_set():
             if not TDXQuotesPoller.is_trading_time():
-                time.sleep(30)
+                _time_module.sleep(30)
                 continue
 
             try:
                 curr = self._poller.poll(self._stock_pool)
             except Exception as e:
                 logger.error(f"TDX 轮询失败: {e}")
-                time.sleep(10)
+                _time_module.sleep(10)
                 continue
 
             # ── 录制模式: 自动保存快照到 test_data/ ──
@@ -1076,7 +1076,7 @@ class MonitorEngine:
 
             if not curr:
                 self._prev_snapshots = curr
-                time.sleep(self._interval)
+                _time_module.sleep(self._interval)
                 continue
 
             # 计算 delta 并喂入滑窗
@@ -1110,7 +1110,7 @@ class MonitorEngine:
 
             if warmup_rounds > 0:
                 warmup_rounds -= 1
-                time.sleep(self._interval)
+                _time_module.sleep(self._interval)
                 continue
 
             # ── 独立触发：1分钟内价格变动 ≥ 1% ──
@@ -1121,8 +1121,8 @@ class MonitorEngine:
                 if code not in self._price_history:
                     self._price_history[code] = []
                 ph = self._price_history[code]
-                ph.append((time.time(), snap.price))
-                ph[:] = [(t, p) for t, p in ph if time.time() - t <= 60]
+                ph.append((_time_module.time(), snap.price))
+                ph[:] = [(t, p) for t, p in ph if _time_module.time() - t <= 60]
                 if len(ph) >= 4:
                     p_first = ph[0][1]
                     p_last = ph[-1][1]
@@ -1151,8 +1151,8 @@ class MonitorEngine:
                 if code not in self._minute_amounts:
                     self._minute_amounts[code] = []
                 w = self._minute_amounts[code]
-                w.append((time.time(), da))
-                w[:] = [(t, a) for t, a in w if time.time() - t <= 60]
+                w.append((_time_module.time(), da))
+                w[:] = [(t, a) for t, a in w if _time_module.time() - t <= 60]
 
             # 按 MAD 倍数排序，每轮最多 10 条
             candidates.sort(key=lambda x: x[2], reverse=True)
@@ -1280,7 +1280,7 @@ class MonitorEngine:
                     + ("..." if len(anomaly_alerts) > 5 else "")
                 )
 
-            time.sleep(self._interval)
+            _time_module.sleep(self._interval)
 
         logger.info("MonitorEngine TDX 轮询退出")
 
@@ -1293,7 +1293,7 @@ class MonitorEngine:
         logger.info("MonitorEngine 东方财富资金流轮询启动")
         while self._running.is_set():
             if not TDXQuotesPoller.is_trading_time():
-                time.sleep(60)
+                _time_module.sleep(60)
                 continue
             try:
                 results = self._fund_poller.fetch_all(self._stock_pool)
@@ -1301,7 +1301,7 @@ class MonitorEngine:
                     logger.debug(f"东方财富资金流: 更新 {len(results)} 只")
             except Exception as e:
                 logger.warning(f"东方财富资金流轮询异常: {e}")
-            time.sleep(self._fund_interval)
+            _time_module.sleep(self._fund_interval)
         logger.info("MonitorEngine 东方财富资金流轮询退出")
 
     # ==================================================================

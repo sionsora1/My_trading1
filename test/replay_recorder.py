@@ -165,8 +165,8 @@ class RecordSession:
     # ------------------------------------------------------------------
 
     def _poll_snapshots(self) -> None:
-        """独立 daemon 线程：每 3 秒拉 TDX 快照写入录制文件。"""
-        from broker.monitor import TDXQuotesPoller
+        """独立 daemon 线程：每 3 秒拉 TDX 快照 → 录制 + 检测器告警 + SSE 推送。"""
+        from broker.monitor import TDXQuotesPoller, QuoteSnapshot, Detector
         poller = TDXQuotesPoller()
         logger.info(f'[录制轮询] 启动: {len(self._stock_pool)} 只股票')
 
@@ -185,6 +185,10 @@ class RecordSession:
                 logger.info(f'[录制轮询] 加载 {len(name_map)} 个名称映射')
         except Exception:
             pass
+
+        # 初始化检测器（复用回放引擎的管线）
+        detector = Detector()
+        prev_snapshots: Dict[str, Any] = {}
 
         poll_round = 0
         while not self._poll_stop.is_set():
@@ -208,12 +212,21 @@ class RecordSession:
                 if hasattr(snap, 'name') and not snap.name and code in name_map:
                     curr[code] = dataclasses.replace(snap, name=name_map[code])
 
+            # 录制快照
             try:
                 self.record_snapshots(curr)
             except Exception as e:
                 logger.debug(f'[录制轮询] 写入异常: {e}')
 
-            # 每 60 秒拉一次分钟 K 线（每 20 轮，3秒/轮）
+            # 大单检测 + SSE 推送
+            try:
+                self._detect_and_push(curr, prev_snapshots, detector)
+            except Exception as e:
+                logger.debug(f'[录制轮询] 检测异常: {e}')
+
+            prev_snapshots = dict(curr)
+
+            # 每 60 秒拉一次分钟 K 线
             poll_round += 1
             if poll_round % 20 == 0:
                 self._fetch_minute_bars(poller)
@@ -221,6 +234,60 @@ class RecordSession:
             time.sleep(3)
 
         logger.info(f'[录制轮询] 停止: 共 {self._snapshot_count} 条快照')
+
+    def _detect_and_push(self, curr: dict, prev: dict, detector) -> None:
+        """跑大单检测器并把告警推到 MonitorEngine 的 SSE 通道。"""
+        try:
+            alerts = []
+            for code, snap in curr.items():
+                p = prev.get(code)
+                if p is None or getattr(p, 'volume', 0) <= 0:
+                    continue
+                da = snap.amount - p.amount
+                dv = snap.volume - p.volume
+                db_val = (getattr(snap, 'active_buy', 0) or 0) - (getattr(p, 'active_buy', 0) or 0)
+                ds = (getattr(snap, 'active_sell', 0) or 0) - (getattr(p, 'active_sell', 0) or 0)
+                if dv <= 0 or da <= 0:
+                    continue
+                detector.feed(code, da, dv, db_val, ds)
+                result = detector.check(code, da, dv, db_val, ds)
+                if result:
+                    level, mad = result
+                    direction = 'buy' if db_val > ds else ('sell' if ds > db_val else 'neutral')
+                    alerts.append({
+                        'code': code, 'name': getattr(snap, 'name', code),
+                        'direction': direction, 'level': level,
+                        'volume': int(dv), 'hands': int(dv // 100),
+                        'amount': round(da, 2), 'price': snap.price,
+                        'mad_multiple': round(mad, 2),
+                        'time': getattr(snap, 'time', ''),
+                        'timestamp': datetime.now().isoformat(),
+                    })
+
+            if alerts:
+                # 通过 MonitorEngine 的 SSE 推送到前端
+                self._push_alerts_to_monitor(alerts)
+        except Exception as e:
+            logger.debug(f'[检测] 异常: {e}')
+
+    @staticmethod
+    def _push_alerts_to_monitor(alerts: list) -> None:
+        """把告警通过 MonitorEngine SSE 推送到前端大单监控面板。"""
+        try:
+            from broker.monitor import MonitorEngine
+            engine = MonitorEngine.get_instance()
+            loop = getattr(engine, '_event_loop', None)
+            if loop is None or not loop.is_running():
+                return
+            sse = getattr(engine, '_sse', None)
+            if sse is None:
+                return
+            import asyncio
+            for alert_data in alerts:
+                # push dict, SSE stream handler 检查 isinstance(dict) 后序列化
+                asyncio.run_coroutine_threadsafe(sse.push(alert_data), loop)
+        except Exception:
+            pass
 
     def _fetch_minute_bars(self, poller) -> None:
         """拉取今日分钟 K 线并写入录制文件（每 60 秒调用一次）。"""
@@ -233,6 +300,14 @@ class RecordSession:
             today_str = datetime.now().strftime('%Y%m%d')
             count = 0
 
+            # 复用录制线程的 TDX 服务器配置
+            for ip, port in poller._servers[:1]:  # 只用一个服务器
+                try:
+                    if api.connect(ip, port, time_out=5.0):
+                        break
+                except Exception:
+                    continue
+
             for code in self._stock_pool:
                 if self._poll_stop.is_set():
                     break
@@ -240,7 +315,6 @@ class RecordSession:
                 try:
                     bars = api.get_security_bars(9, market, code, 0, 240)
                     if bars:
-                        # 标准化 TDX 字段名 → 通用格式
                         normalized = []
                         for b in bars:
                             bar_time = str(b.get('datetime', ''))
@@ -260,16 +334,16 @@ class RecordSession:
                             count += 1
                 except Exception:
                     pass
-                time.sleep(0.05)  # 每只间隔 50ms，避免 TDX 限流
+                time.sleep(0.05)
 
             try:
                 api.disconnect()
             except Exception:
                 pass
             if count > 0:
-                logger.debug(f'[录制轮询] 分钟线: {count}/{len(self._stock_pool)} 只, 累计 {self._minute_count} 条')
+                logger.info(f'[录制轮询] 分钟线: {count}/{len(self._stock_pool)} 只, 累计 {self._minute_count} 条')
         except Exception as e:
-            logger.debug(f'[录制轮询] 分钟线拉取异常: {e}')
+            logger.warning(f'[录制轮询] 分钟线拉取异常: {e}')
 
     # ------------------------------------------------------------------
     # 录制方法（供 MonitorEngine 等外部调用，兼容旧逻辑）
