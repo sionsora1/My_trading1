@@ -231,6 +231,10 @@ class RecordSession:
             if poll_round % 20 == 0:
                 self._fetch_minute_bars(poller)
 
+            # 每天拉一次资金流向（日线数据，首次轮询立即拉）
+            if poll_round == 1:
+                self._fetch_fund_flow()
+
             time.sleep(3)
 
         logger.info(f'[录制轮询] 停止: 共 {self._snapshot_count} 条快照')
@@ -318,7 +322,9 @@ class RecordSession:
                         normalized = []
                         for b in bars:
                             bar_time = str(b.get('datetime', ''))
-                            if bar_time[:8] != today_str:
+                            # bar_time 格式: '2026-07-01 15:00', today_str: '20260701'
+                            bar_date = bar_time[:10].replace('-', '')
+                            if bar_date != today_str:
                                 continue
                             normalized.append({
                                 'trade_time': bar_time,
@@ -344,6 +350,28 @@ class RecordSession:
                 logger.info(f'[录制轮询] 分钟线: {count}/{len(self._stock_pool)} 只, 累计 {self._minute_count} 条')
         except Exception as e:
             logger.warning(f'[录制轮询] 分钟线拉取异常: {e}')
+
+    def _fetch_fund_flow(self) -> None:
+        """拉取资金流向（每天一次，限制 TOP 10 避免 API 过载）。"""
+        if not self.is_recording:
+            return
+        try:
+            from data.fetcher import DataFetcher
+            fetcher = DataFetcher()
+            fund_ok = 0
+            for code in self._stock_pool[:10]:
+                try:
+                    df = fetcher.get_money_flow(code)
+                    if df is not None and not df.empty:
+                        latest = df.iloc[-1].to_dict()
+                        self.record_fund_flow(code, latest)
+                        fund_ok += 1
+                except Exception:
+                    pass
+            if fund_ok > 0:
+                logger.info(f'[录制轮询] 资金流向: {fund_ok}/10 只')
+        except Exception as e:
+            logger.debug(f'[录制轮询] 资金流向异常: {e}')
 
     # ------------------------------------------------------------------
     # 录制方法（供 MonitorEngine 等外部调用，兼容旧逻辑）
