@@ -534,7 +534,8 @@ class RecordSession:
         """清理超过 max_days 天的录制数据。"""
         if not os.path.isdir(TEST_DATA_DIR):
             return 0
-        cutoff = datetime.now().strftime('%Y%m%d')
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=max_days)).strftime('%Y%m%d')
         removed = 0
         for d in sorted(os.listdir(TEST_DATA_DIR)):
             if d < cutoff:
