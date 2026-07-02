@@ -224,6 +224,7 @@
 
     <script>
         const BASE = '/api/live';
+        const API_KEY_STORAGE = 'quantApiKey';
         let curTab = 'signals';
 
         function showToast(msg, type) {
@@ -236,11 +237,28 @@
             const r = await fetch(`${BASE}${path}`);
             return r.ok ? r.json() : {status:'error'};
         }
+
+        function getApiKey() {
+            let key = localStorage.getItem(API_KEY_STORAGE) || '';
+            if (!key) {
+                key = window.prompt('API Key') || '';
+                if (key) localStorage.setItem(API_KEY_STORAGE, key);
+            }
+            return key;
+        }
+
         async function apiPost(path, body) {
+            const key = getApiKey();
+            if (!key) return {status:'error', detail:'API Key required'};
             const r = await fetch(`${BASE}${path}`, {
-                method:'POST', headers:{'Content-Type':'application/json'},
+                method:'POST',
+                headers:{
+                    'Content-Type':'application/json',
+                    'Authorization':`Bearer ${key}`,
+                },
                 body: JSON.stringify(body||{})
             });
+            if (r.status === 401) localStorage.removeItem(API_KEY_STORAGE);
             return r.json();
         }
 

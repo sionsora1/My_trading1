@@ -503,6 +503,12 @@
                 <div>
                     <span class="text-dim">今日交易: </span><strong id="riskTrades">0笔</strong>
                 </div>
+                <div>
+                    <span class="text-dim">熔断原因: </span><strong id="riskHaltReason">--</strong>
+                </div>
+                <div>
+                    <span class="text-dim">触发时间: </span><strong id="riskHaltTime">--</strong>
+                </div>
             </div>
         </div>
     </div>
@@ -512,6 +518,7 @@
 
     <script>
         const BASE = '/api/live';
+        const API_KEY_STORAGE = 'quantApiKey';
         let refreshTimer = null;
 
         // ========== Toast ==========
@@ -524,6 +531,34 @@
         }
 
         // ========== API Helpers ==========
+        function getApiKey() {
+            let key = localStorage.getItem(API_KEY_STORAGE) || '';
+            if (!key) {
+                key = window.prompt('API Key') || '';
+                if (key) localStorage.setItem(API_KEY_STORAGE, key);
+            }
+            return key;
+        }
+
+        function authHeaders(extra) {
+            const key = getApiKey();
+            if (!key) return extra || {};
+            return { ...(extra || {}), 'Authorization': `Bearer ${key}` };
+        }
+
+        async function writeFetch(url, options) {
+            const key = getApiKey();
+            if (!key) {
+                return {
+                    ok: false,
+                    status: 401,
+                    json: async () => ({ status: 'error', detail: 'API Key required' })
+                };
+            }
+            const headers = { ...(options?.headers || {}), 'Authorization': `Bearer ${key}` };
+            return fetch(url, { ...(options || {}), headers });
+        }
+
         async function apiGet(path) {
             try {
                 const r = await fetch(`${BASE}${path}`);
@@ -536,10 +571,15 @@
             try {
                 const r = await fetch(`${BASE}${path}`, {
                     method: 'POST',
-                    headers: {'Content-Type':'application/json'},
+                    headers: authHeaders({'Content-Type':'application/json'}),
                     body: JSON.stringify(body)
                 });
-                return await r.json();
+                const data = await r.json();
+                if (r.status === 401 || r.status === 503) {
+                    if (r.status === 401) localStorage.removeItem(API_KEY_STORAGE);
+                    return {status:'error',data:null,error:data.detail || 'Unauthorized'};
+                }
+                return data;
             } catch(e) { return {status:'error',data:null,error:e.message}; }
         }
 
@@ -553,11 +593,34 @@
             const running = d.running;
             document.getElementById('statusDot').className = `status-dot ${running ? 'dot-running' : 'dot-stopped'}`;
             document.getElementById('statusText').textContent = running ? '运行中' : '已停止';
-            document.getElementById('statusBroker').textContent = d.broker_label || d.broker_name;
+            const brokerEl = document.getElementById('statusBroker');
+            if (d.broker_fallback) {
+                brokerEl.textContent = `${d.requested_broker_label || d.requested_broker} → ${d.active_broker_label || d.active_broker}`;
+                brokerEl.className = 'text-red';
+                brokerEl.title = d.broker_fallback_reason || '';
+            } else {
+                brokerEl.textContent = d.active_broker_label || d.broker_label || d.broker_name;
+                brokerEl.className = '';
+                brokerEl.title = '';
+            }
             document.getElementById('statusMode').textContent = d.trade_mode_label;
             document.getElementById('statusScan').textContent = d.last_scan_time || '--';
             document.getElementById('statusRisk').textContent = d.risk?.trading_halted ? '⚠ 已暂停' : '正常';
             if (d.risk?.trading_halted) document.getElementById('statusRisk').className = 'text-red';
+
+            const statusRisk = document.getElementById('statusRisk');
+            const circuitBreaker = d.risk?.circuit_breaker || {};
+            if (circuitBreaker.halted) {
+                statusRisk.title = circuitBreaker.reason || '';
+            }
+            if (d.broker_fallback && !d.risk?.trading_halted) {
+                statusRisk.textContent = '券商降级';
+                statusRisk.className = 'text-red';
+                statusRisk.title = d.broker_fallback_reason || '';
+            } else if (!d.risk?.trading_halted) {
+                statusRisk.className = '';
+                statusRisk.title = '';
+            }
 
             // Buttons
             document.getElementById('btnStart').style.display = running ? 'none' : '';
@@ -582,13 +645,21 @@
 
             // Risk
             const r = d.risk || {};
+            const riskBreaker = r.circuit_breaker || {};
             document.getElementById('riskStarting').textContent = r.starting_equity ? `${(r.starting_equity/10000).toFixed(2)}万` : '--';
             document.getElementById('riskLoss').textContent = r.daily_loss ? `${r.daily_loss.toFixed(0)}元` : '0元';
             document.getElementById('riskLossRate').textContent = r.daily_loss_rate ? `${(r.daily_loss_rate*100).toFixed(2)}%` : '0%';
             document.getElementById('riskTrades').textContent = `${r.daily_trade_count || 0}笔`;
+            document.getElementById('riskHaltReason').textContent = riskBreaker.halted ? (riskBreaker.reason || '--') : '--';
+            document.getElementById('riskHaltTime').textContent = riskBreaker.halted ? (riskBreaker.triggered_at || '--') : '--';
             if (r.trading_halted) {
                 document.getElementById('riskStatus').textContent = '⚠ 已暂停';
                 document.getElementById('riskStatus').className = 'card-badge badge-danger';
+                document.getElementById('riskStatus').title = riskBreaker.reason || '';
+            } else {
+                document.getElementById('riskStatus').textContent = '正常';
+                document.getElementById('riskStatus').className = 'card-badge badge-live';
+                document.getElementById('riskStatus').title = '';
             }
         }
 
@@ -848,7 +919,7 @@
         async function removeStock(code) {
             if (!confirm(`确定从股票池中移除 ${code}？`)) return;
             try {
-                const r = await fetch(`${BASE}/pool/${code}`, { method: 'DELETE' });
+                const r = await writeFetch(`${BASE}/pool/${code}`, { method: 'DELETE' });
                 const d = await r.json();
                 if (d.status === 'success') {
                     showToast(d.message, 'success');

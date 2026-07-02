@@ -6,6 +6,7 @@ A股量化交易系统 - 后端服务
 import sys
 import os
 import logging
+import hmac
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -63,7 +64,7 @@ logger = logging.getLogger("server")
 from utils.logger import get_logger as _get_logger
 backtest_logger = _get_logger('backtest', 'backtest.log')
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -623,6 +624,48 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+INSECURE_API_KEYS = {'', 'quant-trading-2026'}
+
+
+def _extract_api_token(request: Request) -> Optional[str]:
+    """Extract an API token from Authorization header or query params.
+
+    Args:
+        request: Incoming FastAPI request.
+
+    Returns:
+        The provided token, or None when no token was supplied.
+    """
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        return auth_header[7:]
+    return request.query_params.get('api_key')
+
+
+def require_live_write_auth(request: Request) -> None:
+    """Require a strong API key for live-trading write operations.
+
+    Args:
+        request: Incoming FastAPI request.
+
+    Raises:
+        HTTPException: 503 when QUANT_API_KEY is not safely configured,
+            or 401 when the caller provides no valid token.
+    """
+    if not API_KEY or API_KEY in INSECURE_API_KEYS:
+        raise HTTPException(
+            status_code=503,
+            detail='QUANT_API_KEY must be configured to protect live write APIs.',
+        )
+
+    token = _extract_api_token(request)
+    if not token or not hmac.compare_digest(str(token), str(API_KEY)):
+        raise HTTPException(
+            status_code=401,
+            detail='Unauthorized: valid API Key required.',
+        )
+
+
 app.add_middleware(ApiKeyMiddleware)
 
 # 全局状态
@@ -1104,7 +1147,7 @@ class SyncPoolToLiveRequest(BaseModel):
     codes: List[str]
 
 
-@app.post("/api/pool/sync-to-live")
+@app.post("/api/pool/sync-to-live", dependencies=[Depends(require_live_write_auth)])
 async def sync_pool_to_live(req: SyncPoolToLiveRequest):
     """将回测面板的股票池同步到实盘"""
     valid_codes = [c.strip() for c in req.codes if c.strip().isdigit() and len(c.strip()) == 6]
@@ -1623,7 +1666,7 @@ async def live_orders(status: Optional[str] = None, limit: int = 50):
     return {"status": "success", "data": server.get_orders(status, limit)}
 
 
-@app.post("/api/live/order")
+@app.post("/api/live/order", dependencies=[Depends(require_live_write_auth)])
 async def live_submit_order(request: LiveOrderRequest):
     """提交订单（手动下单）"""
     server = get_live_server()
@@ -1637,7 +1680,10 @@ async def live_submit_order(request: LiveOrderRequest):
     return {"status": "success" if result.get('success') else "error", "data": result}
 
 
-@app.post("/api/live/order/{order_id}/cancel")
+@app.post(
+    "/api/live/order/{order_id}/cancel",
+    dependencies=[Depends(require_live_write_auth)],
+)
 async def live_cancel_order(order_id: str):
     """撤销订单"""
     server = get_live_server()
@@ -1660,7 +1706,7 @@ async def live_signal_history(limit: int = 100):
     return {"status": "success", "data": history[:limit]}
 
 
-@app.post("/api/live/signal/confirm")
+@app.post("/api/live/signal/confirm", dependencies=[Depends(require_live_write_auth)])
 async def live_confirm_signal(request: SignalConfirmRequest):
     """确认/拒绝信号"""
     server = get_live_server()
@@ -1673,7 +1719,7 @@ async def live_confirm_signal(request: SignalConfirmRequest):
     return {"status": "success" if result.get('success') else "error", "data": result}
 
 
-@app.post("/api/live/scan")
+@app.post("/api/live/scan", dependencies=[Depends(require_live_write_auth)])
 async def live_scan():
     """手动触发一次策略扫描"""
     server = get_live_server()
@@ -1681,7 +1727,7 @@ async def live_scan():
     return {"status": "success", "data": result}
 
 
-@app.post("/api/live/start")
+@app.post("/api/live/start", dependencies=[Depends(require_live_write_auth)])
 async def live_start(background_tasks: BackgroundTasks,
                      config_update: LiveConfigUpdate = LiveConfigUpdate(),
                      # 兼容旧前端（query params）
@@ -1757,7 +1803,7 @@ class LiveConfigBody(BaseModel):
     strategy: Optional[str] = None  # 策略选择
 
 
-@app.post("/api/live/config")
+@app.post("/api/live/config", dependencies=[Depends(require_live_write_auth)])
 async def live_update_config(req: LiveConfigBody):
     """更新实盘配置（策略/模式/券商），无需重启"""
     server = get_live_server()
@@ -1793,7 +1839,7 @@ async def live_update_config(req: LiveConfigBody):
     }
 
 
-@app.post("/api/live/stop")
+@app.post("/api/live/stop", dependencies=[Depends(require_live_write_auth)])
 async def live_stop():
     """停止实盘交易服务"""
     server = get_live_server()
@@ -1801,7 +1847,7 @@ async def live_stop():
     return {"status": "success", "data": result}
 
 
-@app.post("/api/live/reset")
+@app.post("/api/live/reset", dependencies=[Depends(require_live_write_auth)])
 async def live_reset():
     """重置模拟账户"""
     server = get_live_server()
@@ -2002,7 +2048,7 @@ async def get_stock_pool(refresh: bool = False):
     }
 
 
-@app.post("/api/live/pool/add")
+@app.post("/api/live/pool/add", dependencies=[Depends(require_live_write_auth)])
 async def add_stock_to_pool(item: StockPoolItem):
     """添加股票到池"""
     code = item.code.strip()
@@ -2041,7 +2087,7 @@ async def add_stock_to_pool(item: StockPoolItem):
     }
 
 
-@app.delete("/api/live/pool/{code}")
+@app.delete("/api/live/pool/{code}", dependencies=[Depends(require_live_write_auth)])
 async def remove_stock_from_pool(code: str):
     """从池中移除股票"""
     pool = _load_stock_pool()
@@ -2058,7 +2104,7 @@ async def remove_stock_from_pool(code: str):
     return {"status": "success", "message": f"已移除 {code}"}
 
 
-@app.post("/api/live/pool/import")
+@app.post("/api/live/pool/import", dependencies=[Depends(require_live_write_auth)])
 async def import_stock_pool(pool: List[StockPoolItem]):
     """批量导入股票池（替换现有池）"""
     result = []
@@ -2099,7 +2145,7 @@ class StockPoolTextImport(BaseModel):
     content: str = ''  # 每行一个代码，或 代码,名称,行业
 
 
-@app.post("/api/live/pool/import-text")
+@app.post("/api/live/pool/import-text", dependencies=[Depends(require_live_write_auth)])
 async def import_stock_pool_text(req: StockPoolTextImport):
     """从文本导入股票池（每行一个代码或 代码,名称）"""
     lines = req.content.strip().split('\n')
@@ -2168,7 +2214,7 @@ class TradeRecordRequest(BaseModel):
     reason: str = ''            # 备注
 
 
-@app.post("/api/live/trade/record")
+@app.post("/api/live/trade/record", dependencies=[Depends(require_live_write_auth)])
 async def record_manual_trade(req: TradeRecordRequest):
     """记录一笔手动执行的交易（用户在APP操作后回来记录）"""
     server = get_live_server()
@@ -2198,7 +2244,10 @@ async def get_trade_checklist():
     }
 
 
-@app.post("/api/live/trade/checklist/{item_id}/done")
+@app.post(
+    "/api/live/trade/checklist/{item_id}/done",
+    dependencies=[Depends(require_live_write_auth)],
+)
 async def mark_checklist_done(item_id: str, price: float = 0, quantity: int = 0):
     """标记清单项已执行"""
     server = get_live_server()
@@ -2210,7 +2259,10 @@ async def mark_checklist_done(item_id: str, price: float = 0, quantity: int = 0)
     return {"status": "error", "message": f"找不到 {item_id}"}
 
 
-@app.post("/api/live/trade/checklist/{item_id}/skip")
+@app.post(
+    "/api/live/trade/checklist/{item_id}/skip",
+    dependencies=[Depends(require_live_write_auth)],
+)
 async def mark_checklist_skipped(item_id: str):
     """标记清单项跳过"""
     server = get_live_server()
@@ -2230,7 +2282,7 @@ class MonitorStartRequest(BaseModel):
     stock_pool: Optional[List[str]] = None
 
 
-@app.post("/api/monitor/start")
+@app.post("/api/monitor/start", dependencies=[Depends(require_live_write_auth)])
 async def monitor_start(request: MonitorStartRequest = MonitorStartRequest()):
     """启动大单监控"""
     engine = MonitorEngine.get_instance()
@@ -2258,7 +2310,7 @@ async def monitor_start(request: MonitorStartRequest = MonitorStartRequest()):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/monitor/stop")
+@app.post("/api/monitor/stop", dependencies=[Depends(require_live_write_auth)])
 async def monitor_stop():
     """停止大单监控"""
     engine = MonitorEngine.get_instance()
@@ -2327,7 +2379,7 @@ async def monitor_stream():
 # 盯盘 API
 # ============================================================
 
-@app.post("/api/watcher/start")
+@app.post("/api/watcher/start", dependencies=[Depends(require_live_write_auth)])
 async def watcher_start(request: MonitorStartRequest = MonitorStartRequest()):
     """启动盯盘"""
     from broker.market_watcher import MarketWatcherEngine
@@ -2342,7 +2394,7 @@ async def watcher_start(request: MonitorStartRequest = MonitorStartRequest()):
     return engine.start(stock_pool)
 
 
-@app.post("/api/watcher/stop")
+@app.post("/api/watcher/stop", dependencies=[Depends(require_live_write_auth)])
 async def watcher_stop():
     """停止盯盘"""
     from broker.market_watcher import MarketWatcherEngine

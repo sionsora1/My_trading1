@@ -42,6 +42,11 @@ class LiveTradingServer:
 
         # 模式
         self.broker_name = self.config.get('broker', 'sim')
+        self.requested_broker_name = self.broker_name
+        self.active_broker_name = self.broker_name
+        self.broker_connection_failed = False
+        self.broker_fallback = False
+        self.broker_fallback_reason = ''
         self.trade_mode = self.config.get('mode', 'semi')
 
         # 初始化组件
@@ -66,24 +71,31 @@ class LiveTradingServer:
 
     def _init_broker(self):
         """初始化券商连接器"""
-        broker_config = self.config.get(self.broker_name, {})
-        self.broker = get_broker(self.broker_name, broker_config)
+        requested_broker = self.broker_name
+        self.requested_broker_name = requested_broker
+        self.active_broker_name = requested_broker
         self.broker_connection_failed = False
+        self.broker_fallback = False
         self.broker_fallback_reason = ''
+        broker_config = self.config.get(requested_broker, {})
+        self.broker = get_broker(requested_broker, broker_config)
 
         if not self.broker.connect():
             self.broker_connection_failed = True
+            self.broker_fallback = requested_broker != 'sim'
             self.broker_fallback_reason = (
                 f'券商 "{self.broker_name}" 连接失败，已自动降级为模拟盘。'
                 f'请检查券商配置和网络连接。'
             )
             logger.warning('券商连接失败，降级为模拟盘', extra={'data': {
-                'broker': self.broker_name,
+                'requested_broker': requested_broker,
+                'active_broker': 'sim',
                 'reason': '连接失败，请检查券商配置和网络连接',
             }})
             self.broker = get_broker('sim', self.config.get('sim', {}))
             self.broker.connect()
             self.broker_name = 'sim'
+            self.active_broker_name = 'sim'
 
     def _init_risk_manager(self):
         """初始化风控"""
@@ -218,8 +230,26 @@ class LiveTradingServer:
             'running': self.running,
             'broker_name': self.broker_name,
             'broker_label': BROKER_REGISTRY[self.broker_name]['name'],
+            'requested_broker': getattr(self, 'requested_broker_name', self.broker_name),
+            'requested_broker_label': BROKER_REGISTRY.get(
+                getattr(self, 'requested_broker_name', self.broker_name),
+                {'name': getattr(self, 'requested_broker_name', self.broker_name)},
+            )['name'],
+            'active_broker': getattr(self, 'active_broker_name', self.broker_name),
+            'active_broker_label': BROKER_REGISTRY.get(
+                getattr(self, 'active_broker_name', self.broker_name),
+                {'name': getattr(self, 'active_broker_name', self.broker_name)},
+            )['name'],
+            'broker_fallback': getattr(self, 'broker_fallback', False),
             'broker_connection_failed': getattr(self, 'broker_connection_failed', False),
             'broker_fallback_reason': getattr(self, 'broker_fallback_reason', ''),
+            'broker_status': {
+                'requested_broker': getattr(self, 'requested_broker_name', self.broker_name),
+                'active_broker': getattr(self, 'active_broker_name', self.broker_name),
+                'fallback': getattr(self, 'broker_fallback', False),
+                'connection_failed': getattr(self, 'broker_connection_failed', False),
+                'fallback_reason': getattr(self, 'broker_fallback_reason', ''),
+            },
             'trade_mode': self.trade_mode,
             'trade_mode_label': '全自动' if self.trade_mode == 'auto' else '半自动',
             'account': {

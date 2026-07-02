@@ -337,7 +337,7 @@ class SQLiteManager:
     # daily_bars CRUD
     # ------------------------------------------------------------------
 
-    def upsert_daily_bars(self, rows: list[dict]):
+    def upsert_daily_bars(self, rows: list[dict]) -> None:
         """Insert or replace a batch of daily bar rows.
 
         Each row dict must contain keys matching the daily_bars columns.
@@ -347,6 +347,7 @@ class SQLiteManager:
                 'volume', 'amount', 'turnover', 'pct_chg',
                 'ma5', 'ma10', 'ma20', 'ma60', 'volume_ma20',
                 'return_1d', 'return_5d', 'return_20d', 'return_60d', 'volatility']
+        rows = [{c: row.get(c) for c in cols} for row in rows]
         placeholders = [f':{c}' for c in cols]
         sql = f"INSERT OR REPLACE INTO daily_bars ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
         with self._transaction() as conn:

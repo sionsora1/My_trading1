@@ -45,7 +45,7 @@ class TransBigDetector:
         _prev_snapshots: 上一轮快照 (用于计算 delta)
     """
 
-    def __init__(self, queue: 'queue.Queue', stock_pool: List[str], **kwargs: Any):
+    def __init__(self, queue: 'queue.Queue', stock_pool: List[str], **kwargs: Any) -> None:
         """初始化逐笔大单检测器。
 
         Args:
@@ -59,16 +59,46 @@ class TransBigDetector:
         self._stock_pool = list(stock_pool)
 
         # 配置参数
-        self._interval_sec: float = cfg.get('interval_sec', 3)
-        self._abs_threshold: int = cfg.get('abs_threshold', 20_000_000)           # 2000万
-        self._dynamic_multiple: int = cfg.get('dynamic_multiple', 30)              # ×30
-        self._lookback_days: int = cfg.get('lookback_days', 30)                    # 30日
-        self._super_large_multiple: int = cfg.get('super_large_multiple', 3)       # 特大单倍率
-        self._super_large_abs: int = cfg.get('super_large_abs', 50_000_000)        # 5000万
-        self._giant_abs: int = cfg.get('giant_abs', 100_000_000)                  # 1亿
-        self._auction_days: int = cfg.get('auction_days', 5)                       # 竞价对比天数
-        self._auction_multiple: int = cfg.get('auction_multiple', 3)               # 竞价异常倍率
-        self._pre_filter_mad: int = cfg.get('pre_filter_mad', 3)                   # 预筛选倍率
+        self._interval_sec: float = kwargs.get(
+            'interval_sec',
+            cfg.get('interval_sec', 3),
+        )
+        self._abs_threshold: int = kwargs.get(
+            'abs_threshold',
+            cfg.get('abs_threshold', 20_000_000),
+        )
+        self._dynamic_multiple: int = kwargs.get(
+            'dynamic_multiple',
+            cfg.get('dynamic_multiple', 30),
+        )
+        self._lookback_days: int = kwargs.get(
+            'lookback_days',
+            cfg.get('lookback_days', 30),
+        )
+        self._super_large_multiple: int = kwargs.get(
+            'super_large_multiple',
+            cfg.get('super_large_multiple', 3),
+        )
+        self._super_large_abs: int = kwargs.get(
+            'super_large_abs',
+            cfg.get('super_large_abs', 50_000_000),
+        )
+        self._giant_abs: int = kwargs.get(
+            'giant_abs',
+            cfg.get('giant_abs', 100_000_000),
+        )
+        self._auction_days: int = kwargs.get(
+            'auction_days',
+            cfg.get('auction_days', 5),
+        )
+        self._auction_multiple: int = kwargs.get(
+            'auction_multiple',
+            cfg.get('auction_multiple', 3),
+        )
+        self._pre_filter_mad: int = kwargs.get(
+            'pre_filter_mad',
+            cfg.get('pre_filter_mad', 3),
+        )
 
         # TDX 服务器地址
         tdx_cfg = DATA_SOURCE_CONFIG.get('tdx', {})

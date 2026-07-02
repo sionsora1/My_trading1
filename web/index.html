@@ -435,6 +435,17 @@
         });
     }
 
+    function liveWriteHeaders() {
+        let key = localStorage.getItem('quantApiKey') || '';
+        if (!key) {
+            key = window.prompt('API Key') || '';
+            if (key) localStorage.setItem('quantApiKey', key);
+        }
+        return key
+            ? {'Content-Type':'application/json','Authorization':`Bearer ${key}`}
+            : {'Content-Type':'application/json'};
+    }
+
     async function checkStatus() {
         // Backend (this server) — fast same-origin check
         try {
@@ -467,7 +478,7 @@
         switch(action) {
             case 'scan':
                 try {
-                    const r = await fetch('/api/live/scan', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                    const r = await fetch('/api/live/scan', {method:'POST',headers:liveWriteHeaders(),body:'{}'});
                     const d = await r.json();
                     if (d.status === 'success') {
                         alert('扫描完成！生成 ' + (d.data?.signals?.length || 0) + ' 条信号');
@@ -481,7 +492,7 @@
             case 'reset':
                 if (!confirm('确定要重置模拟账户吗？所有持仓将被清空。')) return;
                 try {
-                    const r = await fetch('/api/live/reset', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                    const r = await fetch('/api/live/reset', {method:'POST',headers:liveWriteHeaders(),body:'{}'});
                     const d = await r.json();
                     alert(d.status === 'success' ? '账户已重置' : '重置失败');
                 } catch(e) {
@@ -490,7 +501,7 @@
                 break;
             case 'start':
                 try {
-                    const r = await fetch('/api/live/start', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+                    const r = await fetch('/api/live/start', {method:'POST',headers:liveWriteHeaders(),body:'{}'});
                     const d = await r.json();
                     if (d.status === 'success') {
                         alert('实盘服务已启动');

@@ -74,6 +74,9 @@ class TestSQLiteManager:
         assert row["amount"] == 54000000.0
         assert row["turnover"] == 0.03
         assert row["pct_chg"] == 1.5
+        assert row["ma5"] is None
+        assert row["return_1d"] is None
+        assert row["volatility"] is None
 
     # ------------------------------------------------------------------
     # TC-DB03: upsert_daily_bars updates existing data

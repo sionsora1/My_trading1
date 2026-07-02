@@ -158,7 +158,7 @@ class TestOrderbookDetector:
 
     def test_bid_ask_surge_triggers(self):
         """TC-AD04: volume > median*10 AND > 2000 at bid_vol1 level triggers."""
-        detector = OrderbookDetector(cooldown_sec=0)
+        detector = OrderbookDetector(cooldown_sec=0, bid_change_min_hands=2000)
         self._populate_window(detector, '600519')
         # median bid_vol1 = 10, threshold = 10*10 = 100
         # cur bid_vol1 = 3000 > 100 AND > 2000 → trigger
@@ -194,7 +194,7 @@ class TestOrderbookDetector:
 
     def test_cancel_triggers(self):
         """TC-AD06: previous tick had big order, current tick same level < 200."""
-        detector = OrderbookDetector(cooldown_sec=0)
+        detector = OrderbookDetector(cooldown_sec=0, bid_change_min_hands=2000)
         self._populate_window(detector, '600519')
         # median bid_vol1 = 10, surge_threshold = 10*10 = 100
         # previous snap: bid_vol1 = 5000 > 100 AND > 2000 → recognized as big order
@@ -323,7 +323,12 @@ class TestTransBigThreshold:
     def _setup_detector(code='600519'):
         """Create a TransBigDetector with queue and snapshots."""
         queue = std_queue.Queue()
-        detector = TransBigDetector(queue, [code], abs_threshold=20_000_000)
+        detector = TransBigDetector(
+            queue,
+            [code],
+            abs_threshold=20_000_000,
+            super_large_abs=50_000_000,
+        )
         # Set no hist median so threshold stays at absolute 2000万
         detector.set_hist_medians({})
         # Set latest snapshot for name resolution
@@ -486,7 +491,7 @@ class TestOrderbookEdgeCases:
 
     def test_skip_when_window_not_full(self):
         """TC-AD15: 窗口未满 12 拍时不应触发挂单突变。"""
-        detector = OrderbookDetector()
+        detector = OrderbookDetector(cooldown_sec=0)
         # 窗口未满 (只喂 5 拍)
         code = '600519'
         curr = {}
@@ -502,7 +507,7 @@ class TestOrderbookEdgeCases:
 
     def test_multi_dimension_same_tick(self):
         """TC-AD16: 同一帧触发多个维度时不互相覆盖。"""
-        detector = OrderbookDetector()
+        detector = OrderbookDetector(cooldown_sec=0)
         code = '600519'
         # 喂满 12 拍默认值
         for _ in range(12):

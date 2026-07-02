@@ -1279,8 +1279,15 @@ async function btSyncFromLive() {
 async function btSyncToLive() {
     if (btStockPool.length===0) { showToast('池为空','error'); return; }
     try {
-        const r = await fetch(API_BASE+'/pool/sync-to-live',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({codes:btStockPool})});
+        let apiKey = localStorage.getItem('quantApiKey') || '';
+        if (!apiKey) {
+            apiKey = window.prompt('API Key') || '';
+            if (apiKey) localStorage.setItem('quantApiKey', apiKey);
+        }
+        if (!apiKey) { showToast('API Key required','error'); return; }
+        const r = await fetch(API_BASE+'/pool/sync-to-live',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${apiKey}`},body:JSON.stringify({codes:btStockPool})});
         const d = await r.json();
+        if (r.status === 401) localStorage.removeItem('quantApiKey');
         if (d.status==='success') showToast('已同步到实盘','success'); else showToast('失败: '+(d.message||''),'error');
     } catch(e) { showToast('同步失败','error'); }
 }

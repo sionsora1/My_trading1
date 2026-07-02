@@ -19,6 +19,41 @@ if PROJECT_ROOT not in sys.path:
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "quant_test_cache")
 
 
+def pytest_addoption(parser):
+    """Register switches for tests that depend on external market data."""
+    parser.addoption(
+        "--run-real-data",
+        action="store_true",
+        default=False,
+        help="Run tests marked slow or real_data.",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip external-data tests unless they are explicitly requested."""
+    if (
+        config.getoption("--run-real-data")
+        or os.getenv("RUN_REAL_DATA_TESTS") == "1"
+    ):
+        return
+
+    external_fixtures = {
+        "cached_market_data",
+        "cached_fundamentals",
+        "cached_calendar",
+    }
+    skip_external = pytest.mark.skip(
+        reason="requires --run-real-data or RUN_REAL_DATA_TESTS=1"
+    )
+    for item in items:
+        keywords = item.keywords
+        uses_external_fixture = bool(
+            external_fixtures.intersection(item.fixturenames)
+        )
+        if "slow" in keywords or "real_data" in keywords or uses_external_fixture:
+            item.add_marker(skip_external)
+
+
 @pytest.fixture(scope="session")
 def real_stock_pool():
     """Load stock codes from the live trading pool (81 stocks).

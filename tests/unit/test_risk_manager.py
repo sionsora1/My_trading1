@@ -198,11 +198,44 @@ class TestRiskManager:
         assert rm.state.trading_halted is True, (
             "trading_halted should be set after drawdown trigger"
         )
+        status = rm.get_status()
+        assert status["circuit_breaker"]["halted"] is True
+        assert status["circuit_breaker"]["source"] == "max_drawdown"
+        assert "最大回撤" in status["circuit_breaker"]["reason"]
+        assert status["circuit_breaker"]["triggered_at"]
+        assert status["circuit_breaker"]["metrics"]["drawdown_rate"] <= -0.15
 
         # --- Follow-up order: halted at step 1 ---
         result2 = rm.check_order(order, account, {})
         assert result2.passed is False
         assert not result2.passed  # trading is halted, anything should be blocked
+        assert result2.reason == status["circuit_breaker"]["reason"]
+
+    def test_daily_loss_halt_status_is_structured(self):
+        """Daily loss halt exposes source, reason, trigger time, and metrics."""
+        rm = self._make_manager(max_daily_loss_rate=0.02)
+        rm.state.starting_equity = 100_000
+        rm.state.current_equity = 97_500
+        rm.state.daily_loss = -2_500
+        rm.state.daily_loss_rate = -0.025
+
+        account = self._make_account(total_assets=97_500, available_cash=50_000)
+        order = OrderRequest(
+            ts_code="000002",
+            side=OrderSide.BUY,
+            quantity=100,
+            price=10,
+        )
+
+        result = rm.check_order(order, account, {})
+        status = rm.get_status()
+
+        assert result.passed is False
+        assert status["circuit_breaker"]["halted"] is True
+        assert status["circuit_breaker"]["source"] == "daily_loss"
+        assert status["circuit_breaker"]["triggered_at"]
+        assert status["circuit_breaker"]["metrics"]["daily_loss_rate"] == -0.025
+        assert status["circuit_breaker"]["metrics"]["limit"] == 0.02
 
     # ==================================================================
     # TC-RM04: Risk rejection  (blacklisted stock via check_signal)

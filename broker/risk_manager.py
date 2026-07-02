@@ -44,6 +44,10 @@ class RiskState:
     consecutive_loss_days: int = 0    # 连续亏损天数
     max_consecutive_loss_days: int = 5  # 连续亏损上限
     max_drawdown_rate: float = -0.15  # 最大回撤限制（相对峰值）
+    halt_reason: str = ''             # 暂停交易原因
+    halt_source: str = ''             # 暂停交易来源
+    halt_triggered_at: str = ''       # 暂停交易触发时间
+    halt_metrics: dict = field(default_factory=dict)  # 暂停交易关键指标
 
 
 class RiskManager:
@@ -95,12 +99,13 @@ class RiskManager:
         """
         # 1. 交易暂停检查
         if self.state.trading_halted:
+            reason = self.state.halt_reason or '交易已暂停'
             logger.warning('交易已暂停，订单被拦截', extra={'data': {
-                'ts_code': order.ts_code, 'reason': '日亏损触发交易暂停',
+                'ts_code': order.ts_code, 'reason': reason,
             }})
             return RiskCheckResult(
                 passed=False,
-                reason='今日交易已暂停（触发日亏损限制）',
+                reason=reason,
                 severity='BLOCK'
             )
 
@@ -268,6 +273,20 @@ class RiskManager:
 
         return RiskCheckResult(passed=True)
 
+    def _halt_trading(self, source: str, reason: str, metrics: dict) -> None:
+        """记录交易暂停及结构化熔断信息。
+
+        Args:
+            source: 触发来源。
+            reason: 可展示给用户的暂停原因。
+            metrics: 触发时的关键指标。
+        """
+        self.state.trading_halted = True
+        self.state.halt_source = source
+        self.state.halt_reason = reason
+        self.state.halt_triggered_at = datetime.now().isoformat(timespec='seconds')
+        self.state.halt_metrics = metrics
+
     def _check_daily_loss(self, order: OrderRequest, account: AccountInfo) -> RiskCheckResult:
         """日亏损检查"""
         if self.state.starting_equity <= 0:
@@ -277,8 +296,22 @@ class RiskManager:
         current_daily_rate = self.state.daily_loss_rate
 
         if current_daily_rate <= -abs(self.config.max_daily_loss_rate):
+            halt_reason = (
+                f'触发日亏损限制（当日亏损{current_daily_rate:.2%} >= '
+                f'{self.config.max_daily_loss_rate:.2%}），交易暂停'
+            )
             self.state.max_daily_loss_triggered = True
-            self.state.trading_halted = True
+            self._halt_trading(
+                'daily_loss',
+                halt_reason,
+                {
+                    'daily_loss_rate': current_daily_rate,
+                    'limit': self.config.max_daily_loss_rate,
+                    'daily_loss': self.state.daily_loss,
+                    'current_equity': account.total_assets,
+                    'starting_equity': self.state.starting_equity,
+                },
+            )
             self._save_state()
             logger.critical('日亏损触发，交易暂停', extra={'data': {
                 'daily_loss_rate': round(current_daily_rate, 4),
@@ -296,7 +329,18 @@ class RiskManager:
     def _check_consecutive_losses(self, order: OrderRequest, account: AccountInfo) -> RiskCheckResult:
         """连续亏损检查 — 连续N天亏损则暂停交易"""
         if self.state.consecutive_loss_days >= self.state.max_consecutive_loss_days:
-            self.state.trading_halted = True
+            halt_reason = (
+                f'连续亏损{self.state.consecutive_loss_days}天'
+                f'（上限{self.state.max_consecutive_loss_days}天），交易暂停'
+            )
+            self._halt_trading(
+                'consecutive_loss',
+                halt_reason,
+                {
+                    'consecutive_loss_days': self.state.consecutive_loss_days,
+                    'limit': self.state.max_consecutive_loss_days,
+                },
+            )
             self._save_state()
             logger.critical('连续亏损触发，交易暂停', extra={'data': {
                 'consecutive_days': self.state.consecutive_loss_days,
@@ -316,7 +360,20 @@ class RiskManager:
 
         drawdown = (account.total_assets - self.state.peak_equity) / self.state.peak_equity
         if drawdown <= self.state.max_drawdown_rate:
-            self.state.trading_halted = True
+            halt_reason = (
+                f'触发最大回撤限制（回撤{drawdown:.1%} <= '
+                f'{self.state.max_drawdown_rate:.1%}），交易暂停'
+            )
+            self._halt_trading(
+                'max_drawdown',
+                halt_reason,
+                {
+                    'drawdown_rate': drawdown,
+                    'limit': self.state.max_drawdown_rate,
+                    'peak_equity': self.state.peak_equity,
+                    'current_equity': account.total_assets,
+                },
+            )
             self._save_state()
             logger.critical('最大回撤触发，交易暂停', extra={'data': {
                 'drawdown': round(drawdown, 4),
@@ -412,6 +469,13 @@ class RiskManager:
             'consecutive_loss_days': self.state.consecutive_loss_days,
             'max_consecutive_loss_days': self.state.max_consecutive_loss_days,
             'max_drawdown_rate': self.state.max_drawdown_rate,
+            'circuit_breaker': {
+                'halted': self.state.trading_halted,
+                'source': self.state.halt_source,
+                'reason': self.state.halt_reason,
+                'triggered_at': self.state.halt_triggered_at,
+                'metrics': self.state.halt_metrics,
+            },
         }
 
     def reset_daily_state(self):
@@ -444,6 +508,14 @@ class RiskManager:
                 'daily_buy_amount': self.state.daily_buy_amount,
                 'max_daily_loss_triggered': self.state.max_daily_loss_triggered,
                 'trading_halted': self.state.trading_halted,
+                'peak_equity': self.state.peak_equity,
+                'consecutive_loss_days': self.state.consecutive_loss_days,
+                'max_consecutive_loss_days': self.state.max_consecutive_loss_days,
+                'max_drawdown_rate': self.state.max_drawdown_rate,
+                'halt_reason': self.state.halt_reason,
+                'halt_source': self.state.halt_source,
+                'halt_triggered_at': self.state.halt_triggered_at,
+                'halt_metrics': self.state.halt_metrics,
             }
             with open(self.state_file, 'w', encoding='utf-8') as f:
                 json.dump(state_dict, f, indent=2, ensure_ascii=False)
@@ -467,5 +539,13 @@ class RiskManager:
                     self.state.daily_buy_amount = data.get('daily_buy_amount', 0)
                     self.state.max_daily_loss_triggered = data.get('max_daily_loss_triggered', False)
                     self.state.trading_halted = data.get('trading_halted', False)
+                    self.state.peak_equity = data.get('peak_equity', 0)
+                    self.state.consecutive_loss_days = data.get('consecutive_loss_days', 0)
+                    self.state.max_consecutive_loss_days = data.get('max_consecutive_loss_days', 5)
+                    self.state.max_drawdown_rate = data.get('max_drawdown_rate', -0.15)
+                    self.state.halt_reason = data.get('halt_reason', '')
+                    self.state.halt_source = data.get('halt_source', '')
+                    self.state.halt_triggered_at = data.get('halt_triggered_at', '')
+                    self.state.halt_metrics = data.get('halt_metrics', {})
         except Exception as e:
             logger.warning('加载风控状态失败', extra={'data': {'file': self.state_file, 'error': str(e)}})
