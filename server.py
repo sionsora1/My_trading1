@@ -886,7 +886,7 @@ async def get_stock_info(code: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/backtest")
+@app.post("/api/backtest", dependencies=[Depends(require_live_write_auth)])
 async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
     """运行回测（异步）"""
     task_id = str(uuid.uuid4())[:8]
@@ -911,7 +911,7 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
     }
 
 
-@app.get("/api/tasks")
+@app.get("/api/tasks", dependencies=[Depends(require_live_write_auth)])
 async def get_all_tasks():
     """获取所有任务"""
     return {
@@ -920,7 +920,7 @@ async def get_all_tasks():
     }
 
 
-@app.get("/api/tasks/{task_id}")
+@app.get("/api/tasks/{task_id}", dependencies=[Depends(require_live_write_auth)])
 async def get_task_status(task_id: str):
     """获取任务状态"""
     if task_id not in tasks:
@@ -932,7 +932,7 @@ async def get_task_status(task_id: str):
     }
 
 
-@app.get("/api/results/{task_id}")
+@app.get("/api/results/{task_id}", dependencies=[Depends(require_live_write_auth)])
 async def get_backtest_result(task_id: str):
     """获取回测结果"""
     if task_id not in results:
@@ -944,7 +944,7 @@ async def get_backtest_result(task_id: str):
     }
 
 
-@app.get("/api/results/{task_id}/daily")
+@app.get("/api/results/{task_id}/daily", dependencies=[Depends(require_live_write_auth)])
 async def get_daily_operations(task_id: str, strategy: str = "eight_factor", date: Optional[str] = None):
     """获取每日操作详情"""
     logger.debug(f"daily endpoint called: task_id={task_id}, strategy={strategy}, date={date}")
@@ -986,7 +986,7 @@ async def get_daily_operations(task_id: str, strategy: str = "eight_factor", dat
     return {"status": "success", "data": dates}
 
 
-@app.get("/api/results/{task_id}/chart")
+@app.get("/api/results/{task_id}/chart", dependencies=[Depends(require_live_write_auth)])
 async def get_chart_data(task_id: str, strategy: str = "eight_factor"):
     """获取图表数据"""
     if task_id not in results:
@@ -1018,7 +1018,7 @@ async def get_chart_data(task_id: str, strategy: str = "eight_factor"):
     return {"status": "success", "data": chart_data}
 
 
-@app.delete("/api/tasks/{task_id}")
+@app.delete("/api/tasks/{task_id}", dependencies=[Depends(require_live_write_auth)])
 async def delete_task(task_id: str):
     """删除任务"""
     if task_id in tasks:
@@ -1039,7 +1039,7 @@ class StockPoolImport(BaseModel):
     codes: List[str]
 
 
-@app.get("/api/pool/export")
+@app.get("/api/pool/export", dependencies=[Depends(require_live_write_auth)])
 async def export_stock_pool(codes: str):
     """导出股票池（codes为逗号分隔的股票代码）"""
     try:
@@ -1076,7 +1076,7 @@ async def export_stock_pool(codes: str):
         return {"status": "error", "message": str(e)}
 
 
-@app.post("/api/pool/import")
+@app.post("/api/pool/import", dependencies=[Depends(require_live_write_auth)])
 async def import_stock_pool(pool: StockPoolImport):
     """导入股票池"""
     try:
@@ -1124,7 +1124,7 @@ async def import_stock_pool(pool: StockPoolImport):
 # 股票池跨面板同步
 # ============================================================
 
-@app.get("/api/pool/sync-from-live")
+@app.get("/api/pool/sync-from-live", dependencies=[Depends(require_live_write_auth)])
 async def sync_pool_from_live():
     """从实盘股票池读取代码（供回测面板同步用）"""
     pool = _load_stock_pool()
@@ -1638,28 +1638,28 @@ class LiveConfigUpdate(BaseModel):
     interval_seconds: Optional[int] = None
 
 
-@app.get("/api/live/status")
+@app.get("/api/live/status", dependencies=[Depends(require_live_write_auth)])
 async def live_status():
     """获取实盘服务状态"""
     server = get_live_server()
     return {"status": "success", "data": server.get_status()}
 
 
-@app.get("/api/live/account")
+@app.get("/api/live/account", dependencies=[Depends(require_live_write_auth)])
 async def live_account():
     """获取实盘账户信息"""
     server = get_live_server()
     return {"status": "success", "data": server.get_account()}
 
 
-@app.get("/api/live/positions")
+@app.get("/api/live/positions", dependencies=[Depends(require_live_write_auth)])
 async def live_positions():
     """获取当前持仓"""
     server = get_live_server()
     return {"status": "success", "data": server.get_positions()}
 
 
-@app.get("/api/live/orders")
+@app.get("/api/live/orders", dependencies=[Depends(require_live_write_auth)])
 async def live_orders(status: Optional[str] = None, limit: int = 50):
     """获取订单列表"""
     server = get_live_server()
@@ -1691,14 +1691,14 @@ async def live_cancel_order(order_id: str):
     return {"status": "success" if result.get('success') else "error", "data": result}
 
 
-@app.get("/api/live/signals")
+@app.get("/api/live/signals", dependencies=[Depends(require_live_write_auth)])
 async def live_signals():
     """获取当前信号"""
     server = get_live_server()
     return {"status": "success", "data": server.get_signals()}
 
 
-@app.get("/api/live/signals/history")
+@app.get("/api/live/signals/history", dependencies=[Depends(require_live_write_auth)])
 async def live_signal_history(limit: int = 100):
     """获取信号历史"""
     server = get_live_server()
@@ -2018,7 +2018,7 @@ class StockPoolItem(BaseModel):
     industry: str = ''
 
 
-@app.get("/api/live/pool")
+@app.get("/api/live/pool", dependencies=[Depends(require_live_write_auth)])
 async def get_stock_pool(refresh: bool = False):
     """获取实盘股票池"""
     pool = _load_stock_pool()
@@ -2186,7 +2186,7 @@ async def import_stock_pool_text(req: StockPoolTextImport):
     }
 
 
-@app.get("/api/live/pool/export")
+@app.get("/api/live/pool/export", dependencies=[Depends(require_live_write_auth)])
 async def export_stock_pool(format: str = "json"):
     """导出股票池"""
     pool = _load_stock_pool()
@@ -2228,7 +2228,7 @@ async def record_manual_trade(req: TradeRecordRequest):
     return {"status": "success" if result.get('success') else "error", "data": result}
 
 
-@app.get("/api/live/trade/checklist")
+@app.get("/api/live/trade/checklist", dependencies=[Depends(require_live_write_auth)])
 async def get_trade_checklist():
     """获取交易执行清单"""
     server = get_live_server()
@@ -2327,7 +2327,7 @@ async def monitor_stop():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/monitor/status")
+@app.get("/api/monitor/status", dependencies=[Depends(require_live_write_auth)])
 async def monitor_status():
     """获取大单监控状态"""
     engine = MonitorEngine.get_instance()
@@ -2339,7 +2339,7 @@ async def monitor_status():
     }
 
 
-@app.get("/api/monitor/history")
+@app.get("/api/monitor/history", dependencies=[Depends(require_live_write_auth)])
 async def monitor_history(limit: int = 100):
     """获取大单监控历史告警"""
     engine = MonitorEngine.get_instance()
@@ -2351,7 +2351,7 @@ async def monitor_history(limit: int = 100):
     }
 
 
-@app.get("/api/monitor/stream")
+@app.get("/api/monitor/stream", dependencies=[Depends(require_live_write_auth)])
 async def monitor_stream():
     """大单监控 SSE 推送"""
     engine = MonitorEngine.get_instance()
@@ -2401,7 +2401,7 @@ async def watcher_stop():
     return MarketWatcherEngine.get_instance().stop()
 
 
-@app.get("/api/watcher/status")
+@app.get("/api/watcher/status", dependencies=[Depends(require_live_write_auth)])
 async def watcher_status():
     """获取盯盘状态"""
     from broker.market_watcher import MarketWatcherEngine
@@ -2417,7 +2417,7 @@ async def watcher_status():
     }
 
 
-@app.get("/api/watcher/stream")
+@app.get("/api/watcher/stream", dependencies=[Depends(require_live_write_auth)])
 async def watcher_stream():
     """盯盘 SSE 推送"""
     from broker.market_watcher import MarketWatcherEngine
@@ -2465,7 +2465,7 @@ async def watcher_stream():
 # 数据库浏览器 API
 # ============================================================
 
-@app.get("/api/db/stats")
+@app.get("/api/db/stats", dependencies=[Depends(require_live_write_auth)])
 async def get_db_stats():
     """获取数据库统计信息"""
     try:
@@ -2509,7 +2509,7 @@ async def get_db_stats():
         return {'error': str(e), 'total_stocks': 0, 'total_records': 0, 'industries': 0, 'date_range': '-'}
 
 
-@app.get("/api/db/stocks")
+@app.get("/api/db/stocks", dependencies=[Depends(require_live_write_auth)])
 async def get_db_stocks():
     """获取所有股票列表（含记录数、最新日期、最新收盘价）"""
     try:
@@ -2548,7 +2548,7 @@ async def get_db_stocks():
         return {'error': str(e), 'stocks': [], 'total': 0}
 
 
-@app.get("/api/db/kline/{code}")
+@app.get("/api/db/kline/{code}", dependencies=[Depends(require_live_write_auth)])
 async def get_db_kline(
     code: str,
     start_date: str = Query(default='20240101', description='开始日期 YYYYMMDD'),
@@ -2663,7 +2663,7 @@ _LOG_MODULES = {
 }
 
 
-@app.get("/api/logs")
+@app.get("/api/logs", dependencies=[Depends(require_live_write_auth)])
 async def get_logs(
     lines: int = 200,
     level: Optional[str] = None,
@@ -2713,7 +2713,7 @@ async def get_logs(
         return {'status': 'error', 'message': str(e)}
 
 
-@app.get("/api/logs/download")
+@app.get("/api/logs/download", dependencies=[Depends(require_live_write_auth)])
 async def download_log():
     """下载完整日志文件"""
     if not LOG_FILE.exists():
@@ -2729,10 +2729,10 @@ from web.api import router as web_api_router
 app.include_router(web_api_router)
 
 from web.kline_api import router as kline_api_router
-app.include_router(kline_api_router)
+app.include_router(kline_api_router, dependencies=[Depends(require_live_write_auth)])
 
 from web.db_api import router as db_api_router
-app.include_router(db_api_router)
+app.include_router(db_api_router, dependencies=[Depends(require_live_write_auth)])
 
 from test.replay_api import router as replay_api_router
 app.include_router(replay_api_router)

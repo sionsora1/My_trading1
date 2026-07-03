@@ -406,6 +406,7 @@ body {
 let allStocks = [];
 let selectedStock = null;
 let currentResult = null;
+const API_KEY_STORAGE = 'quantApiKey';
 
 // ============================================================
 // Init
@@ -420,10 +421,32 @@ document.addEventListener('DOMContentLoaded', () => {
 // ============================================================
 // Load stock list
 // ============================================================
+function getApiKey() {
+    let key = localStorage.getItem(API_KEY_STORAGE) || '';
+    if (!key) {
+        key = window.prompt('API Key') || '';
+        if (key) localStorage.setItem(API_KEY_STORAGE, key);
+    }
+    return key;
+}
+
+function klineHeaders(extra) {
+    const key = getApiKey();
+    return key ? { ...(extra || {}), 'Authorization': `Bearer ${key}` } : (extra || {});
+}
+
+async function klineFetch(url, options) {
+    return fetch(url, { ...(options || {}), headers: klineHeaders(options?.headers || {}) });
+}
+
+async function klineJson(url, options) {
+    const response = await klineFetch(url, options);
+    return response.json();
+}
+
 async function loadStockList() {
     try {
-        const resp = await fetch('/api/kline/stocks');
-        const data = await resp.json();
+        const data = await klineJson('/api/kline/stocks');
         allStocks = data.stocks;
         // Default select 600519 贵州茅台
         const moutai = allStocks.find(s => s.code === '600519');
@@ -557,7 +580,7 @@ async function runAnalysis() {
 
         if (period === '1min') {
             // 日内反转: 分钟K线 + V/A检测
-            resp = await fetch(`/api/kline/minute/reversal/${selectedStock.code}`);
+            resp = await klineFetch(`/api/kline/minute/reversal/${selectedStock.code}`);
             result = await resp.json();
             if (result.error) { showToast(result.error); return; }
             result.strategy_name = '日内反转';
@@ -571,7 +594,7 @@ async function runAnalysis() {
             renderMinuteChart(result);
         } else {
             const strategy = getSelectedStrategy();
-            resp = await fetch('/api/kline/strategy', {
+            resp = await klineFetch('/api/kline/strategy', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

@@ -435,14 +435,19 @@
         });
     }
 
-    function liveWriteHeaders() {
+    function liveAuthHeaders() {
         let key = localStorage.getItem('quantApiKey') || '';
         if (!key) {
             key = window.prompt('API Key') || '';
             if (key) localStorage.setItem('quantApiKey', key);
         }
-        return key
-            ? {'Content-Type':'application/json','Authorization':`Bearer ${key}`}
+        return key ? {'Authorization':`Bearer ${key}`} : {};
+    }
+
+    function liveWriteHeaders() {
+        const auth = liveAuthHeaders();
+        return auth.Authorization
+            ? {'Content-Type':'application/json', ...auth}
             : {'Content-Type':'application/json'};
     }
 
@@ -461,7 +466,7 @@
 
         // Live trading
         try {
-            const r = await fetch('/api/live/status');
+            const r = await fetch('/api/live/status', {headers:liveAuthHeaders()});
             const d = await r.json();
             if (d.status === 'success' && d.data) {
                 document.getElementById('dot-live').className = 'status-dot ' +

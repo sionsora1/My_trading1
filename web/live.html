@@ -559,9 +559,20 @@
             return fetch(url, { ...(options || {}), headers });
         }
 
+        async function authJson(url, options) {
+            const response = await writeFetch(url, options);
+            return response.json();
+        }
+
+        function authedStreamUrl(path) {
+            const key = getApiKey();
+            const sep = path.includes('?') ? '&' : '?';
+            return key ? `${path}${sep}api_key=${encodeURIComponent(key)}` : path;
+        }
+
         async function apiGet(path) {
             try {
-                const r = await fetch(`${BASE}${path}`);
+                const r = await fetch(`${BASE}${path}`, { headers: authHeaders() });
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 return await r.json();
             } catch(e) { return {status:'error',data:null,error:e.message}; }
@@ -998,7 +1009,7 @@
 
         async function checkMonitorStatus() {
             try {
-                const r = await fetch('/api/monitor/status').then(res => res.json());
+                const r = await authJson('/api/monitor/status');
                 if (r.running) {
                     document.getElementById('btnMonitorStart').style.display = 'none';
                     document.getElementById('btnMonitorStop').style.display = '';
@@ -1055,6 +1066,10 @@
 
         async function stopMonitor() {
             const r = await writeFetch('/api/monitor/stop', { method: 'POST' }).then(res => res.json());
+            if (r.status !== 'stopped') {
+                showToast('停止失败: ' + (r.message || r.detail || '未知错误'), 'error');
+                return;
+            }
             document.getElementById('btnMonitorStart').style.display = '';
             document.getElementById('btnMonitorStop').style.display = 'none';
             document.getElementById('monitorStatus').textContent = '未启动';
@@ -1063,14 +1078,12 @@
                 monitorEventSource.close();
                 monitorEventSource = null;
             }
-            if (r.status === 'stopped') {
-                showToast('大单监控已停止', 'info');
-            }
+            showToast('大单监控已停止', 'info');
         }
 
         function connectSSE() {
             if (monitorEventSource) monitorEventSource.close();
-            monitorEventSource = new EventSource('/api/monitor/stream');
+            monitorEventSource = new EventSource(authedStreamUrl('/api/monitor/stream'));
 
             monitorEventSource.addEventListener('alert', (event) => {
                 try {
@@ -1270,7 +1283,7 @@
                     document.getElementById('monitorTabCount').textContent = allAlerts.length;
                     // Load history on first visit
                     if (allAlerts.length === 0) {
-                        fetch('/api/monitor/history?limit=100').then(r => r.json()).then(d => {
+                        authJson('/api/monitor/history?limit=100').then(d => {
                             if (d.alerts && d.alerts.length > 0) {
                                 allAlerts = d.alerts;
                                 document.getElementById('monitorAlertCount').textContent = d.alerts.length;
@@ -1327,9 +1340,17 @@
         }
 
         async function stopWatcher() {
+            let r = {};
             try {
-                await writeFetch('/api/watcher/stop', { method: 'POST' });
-            } catch(e) {}
+                r = await writeFetch('/api/watcher/stop', { method: 'POST' }).then(res => res.json());
+            } catch(e) {
+                showToast('停止盯盘失败: 网络错误', 'error');
+                return;
+            }
+            if (r.status && r.status !== 'stopped') {
+                showToast('停止盯盘失败: ' + (r.message || r.detail || '未知错误'), 'error');
+                return;
+            }
             document.getElementById('btnWatcherStart').style.display = '';
             document.getElementById('btnWatcherStop').style.display = 'none';
             document.getElementById('watcherStatusText').textContent = '未启动';
@@ -1339,7 +1360,7 @@
 
         async function checkWatcherStatus() {
             try {
-                const r = await fetch('/api/watcher/status').then(res => res.json());
+                const r = await authJson('/api/watcher/status');
                 if (r.running) {
                     document.getElementById('btnWatcherStart').style.display = 'none';
                     document.getElementById('btnWatcherStop').style.display = '';
@@ -1352,7 +1373,7 @@
 
         function connectWatcherSSE() {
             if (watcherSSE) watcherSSE.close();
-            watcherSSE = new EventSource('/api/watcher/stream');
+            watcherSSE = new EventSource(authedStreamUrl('/api/watcher/stream'));
             watcherSSE.addEventListener('message', (event) => {
                 try {
                     const msg = JSON.parse(event.data);

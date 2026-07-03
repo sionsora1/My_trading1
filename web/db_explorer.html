@@ -255,6 +255,7 @@ tr.selected { background: rgba(56,189,248,0.1); }
 <script>
 const API_BASE = '/api/db';
 const KLINE_API = '/api/kline';
+const API_KEY_STORAGE = 'quantApiKey';
 let allStocks = [], currentSort = { key: 'code', asc: true }, selectedStock = null;
 let chart = null, compareChart = null, pePbChart = null;
 let currentView = 'daily', currentData = null, strategyResult = null, regressionData = null;
@@ -304,9 +305,38 @@ function toggleIndicator(el) {
 // ============================================================
 // API Calls
 // ============================================================
+function getApiKey() {
+    let key = localStorage.getItem(API_KEY_STORAGE) || '';
+    if (!key) {
+        key = window.prompt('API Key') || '';
+        if (key) localStorage.setItem(API_KEY_STORAGE, key);
+    }
+    return key;
+}
+
+function dbHeaders(extra) {
+    const key = getApiKey();
+    return key ? { ...(extra || {}), 'Authorization': `Bearer ${key}` } : (extra || {});
+}
+
+function dbUrl(path) {
+    const key = getApiKey();
+    const sep = path.includes('?') ? '&' : '?';
+    return key ? `${path}${sep}api_key=${encodeURIComponent(key)}` : path;
+}
+
+async function dbFetch(url, options) {
+    return fetch(url, { ...(options || {}), headers: dbHeaders(options?.headers || {}) });
+}
+
+async function dbJson(url, options) {
+    const response = await dbFetch(url, options);
+    return response.json();
+}
+
 async function loadStats() {
     try {
-        const r = await (await fetch(`${API_BASE}/stats`)).json();
+        const r = await dbJson(`${API_BASE}/stats`);
         document.getElementById('stat-total').textContent = r.total_stocks || 0;
         document.getElementById('stat-records').textContent = fmtNum(r.total_records || 0);
         document.getElementById('stat-industries').textContent = r.industries || 0;
@@ -316,7 +346,7 @@ async function loadStats() {
 
 async function loadStocks() {
     try {
-        const r = await (await fetch(`${API_BASE}/stocks`)).json();
+        const r = await dbJson(`${API_BASE}/stocks`);
         allStocks = r.stocks || [];
         const inds = [...new Set(allStocks.map(s=>s.industry).filter(Boolean))].sort();
         const sel = document.getElementById('industry-filter');
@@ -332,8 +362,8 @@ async function loadKline() {
     const ed = document.getElementById('end-date').value.replace(/-/g, '');
     try {
         const [r, regResp] = await Promise.all([
-            fetch(`${API_BASE}/kline/${selectedStock.code}?start_date=${sd}&end_date=${ed}&indicators=all`),
-            fetch(`${KLINE_API}/regression/${selectedStock.code}?start_date=${sd}&end_date=${ed}&window=20&sigma=2`)
+            dbFetch(`${API_BASE}/kline/${selectedStock.code}?start_date=${sd}&end_date=${ed}&indicators=all`),
+            dbFetch(`${KLINE_API}/regression/${selectedStock.code}?start_date=${sd}&end_date=${ed}&window=20&sigma=2`)
         ]);
         currentData = await r.json();
         regressionData = await regResp.json();
@@ -353,12 +383,12 @@ async function loadMinute() {
     const date = document.getElementById('minute-date').value;
     const period = document.getElementById('minute-period').value;
     try {
-        const r = await (await fetch(`${API_BASE}/minute/${selectedStock.code}?date=${date}&period=${period}`)).json();
+        const r = await dbJson(`${API_BASE}/minute/${selectedStock.code}?date=${date}&period=${period}`);
         if (!r.bars || r.bars.length === 0) { showToast('该日期无分钟数据'); return; }
         // 同时获取日内反转信号
         let reversalSignals = [];
         try {
-            const revResp = await fetch(`${KLINE_API}/minute/reversal/${selectedStock.code}?trade_date=${date}`);
+            const revResp = await dbFetch(`${KLINE_API}/minute/reversal/${selectedStock.code}?trade_date=${date}`);
             const revData = await revResp.json();
             if (revData.signals && revData.signals.length > 0) {
                 reversalSignals = revData.signals;
@@ -370,7 +400,7 @@ async function loadMinute() {
 
 async function loadMinuteDates() {
     try {
-        const r = await (await fetch(`${API_BASE}/minute/${selectedStock.code}`)).json();
+        const r = await dbJson(`${API_BASE}/minute/${selectedStock.code}`);
         const sel = document.getElementById('minute-date');
         sel.innerHTML = '';
         if (r.available_dates && r.available_dates.length > 0) {
@@ -393,10 +423,10 @@ async function runStrategy() {
     const sd = document.getElementById('start-date').value.replace(/-/g, '');
     const ed = document.getElementById('end-date').value.replace(/-/g, '');
     try {
-        const r = await (await fetch(`${KLINE_API}/strategy`, {
+        const r = await dbJson(`${KLINE_API}/strategy`, {
             method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({code: selectedStock.code, strategy, start_date: sd, end_date: ed})
-        })).json();
+        });
         strategyResult = r;
         document.getElementById('strategy-metrics').style.display = '';
         document.getElementById('trade-section').style.display = r.trades && r.trades.length > 0 ? '' : 'none';
@@ -411,10 +441,10 @@ async function runComparison() {
     const sd = document.getElementById('start-date').value.replace(/-/g, '');
     const ed = document.getElementById('end-date').value.replace(/-/g, '');
     try {
-        const r = await (await fetch(`${API_BASE}/compare`, {
+        const r = await dbJson(`${API_BASE}/compare`, {
             method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({codes: [...compareSet], start_date: sd, end_date: ed})
-        })).json();
+        });
         renderCompareChart(r);
     } catch(e) { showToast('对比失败: ' + e.message); }
 }
@@ -422,7 +452,7 @@ async function runComparison() {
 async function loadDepth() {
     if (!selectedStock) { showToast('请先选择股票'); return; }
     try {
-        const r = await (await fetch(`${API_BASE}/depth/${selectedStock.code}`)).json();
+        const r = await dbJson(`${API_BASE}/depth/${selectedStock.code}`);
         if (r.status !== 'ok') { showToast('暂无盘口数据（非交易时段或停牌）'); return; }
         renderDepth(r);
     } catch(e) { showToast('盘口数据获取失败（非交易时段或停牌）'); }
@@ -456,7 +486,7 @@ function renderDepth(d) {
 
 async function loadFinancial(code) {
     try {
-        const r = await (await fetch(`${API_BASE}/financial/${code}`)).json();
+        const r = await dbJson(`${API_BASE}/financial/${code}`);
         renderFinancial(r);
     } catch(e) { document.getElementById('fin-panel').style.display = 'none'; }
 }
@@ -466,7 +496,7 @@ async function exportCSV() {
     const sd = document.getElementById('start-date').value.replace(/-/g, '');
     const ed = document.getElementById('end-date').value.replace(/-/g, '');
     const a = document.createElement('a');
-    a.href = `${API_BASE}/kline/${selectedStock.code}/export?start_date=${sd}&end_date=${ed}&format=csv`;
+    a.href = dbUrl(`${API_BASE}/kline/${selectedStock.code}/export?start_date=${sd}&end_date=${ed}&format=csv`);
     a.download = `${selectedStock.code}_${sd}_${ed}.csv`;
     a.click();
 }

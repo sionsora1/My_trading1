@@ -625,10 +625,34 @@
 // Global State
 // ============================================================
 const API_BASE = '/api'; // Same-origin (served by FastAPI)
+const API_KEY_STORAGE = 'quantApiKey';
 let autoRefreshTimer = null;
 let autoRefreshSec = 30;
 let selectedProfileKey = null;
 let signalAutoRefreshTimer = null;
+
+function getApiKey() {
+    let key = localStorage.getItem(API_KEY_STORAGE) || '';
+    if (!key) {
+        key = window.prompt('API Key') || '';
+        if (key) localStorage.setItem(API_KEY_STORAGE, key);
+    }
+    return key;
+}
+
+function authHeaders(extra) {
+    const key = getApiKey();
+    return key ? { ...(extra || {}), 'Authorization': `Bearer ${key}` } : (extra || {});
+}
+
+async function authFetch(url, options) {
+    return fetch(url, { ...(options || {}), headers: authHeaders(options?.headers || {}) });
+}
+
+async function authJson(url, options) {
+    const response = await authFetch(url, options);
+    return response.json();
+}
 
 // ============================================================
 // Init
@@ -1270,7 +1294,7 @@ function btImportPool(event) {
 
 async function btSyncFromLive() {
     try {
-        const r = await fetch(API_BASE+'/pool/sync-from-live'); const d = await r.json();
+        const d = await authJson(API_BASE+'/pool/sync-from-live');
         if (d.status==='success' && d.data.codes && d.data.codes.length>0) { btStockPool=[...d.data.codes]; btRenderPool(); showToast('已同步 '+btStockPool.length+' 只','success'); }
         else { showToast('实盘池为空','error'); }
     } catch(e) { showToast('同步失败','error'); }
@@ -1279,15 +1303,9 @@ async function btSyncFromLive() {
 async function btSyncToLive() {
     if (btStockPool.length===0) { showToast('池为空','error'); return; }
     try {
-        let apiKey = localStorage.getItem('quantApiKey') || '';
-        if (!apiKey) {
-            apiKey = window.prompt('API Key') || '';
-            if (apiKey) localStorage.setItem('quantApiKey', apiKey);
-        }
-        if (!apiKey) { showToast('API Key required','error'); return; }
-        const r = await fetch(API_BASE+'/pool/sync-to-live',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${apiKey}`},body:JSON.stringify({codes:btStockPool})});
+        const r = await authFetch(API_BASE+'/pool/sync-to-live',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({codes:btStockPool})});
         const d = await r.json();
-        if (r.status === 401) localStorage.removeItem('quantApiKey');
+        if (r.status === 401) localStorage.removeItem(API_KEY_STORAGE);
         if (d.status==='success') showToast('已同步到实盘','success'); else showToast('失败: '+(d.message||''),'error');
     } catch(e) { showToast('同步失败','error'); }
 }
@@ -1415,7 +1433,7 @@ async function runBacktest() {
     document.getElementById('bt-progress-bar').style.width='10%';
 
     try {
-        const resp = await fetch(API_BASE + '/backtest', {
+        const resp = await authFetch(API_BASE + '/backtest', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 stock_pool: btStockPool, start_date: startDate, end_date: endDate,
@@ -1442,7 +1460,7 @@ async function btPollTask() {
     for (let i = 0; i < 300; i++) {
         await new Promise(r => setTimeout(r, 2000));
         try {
-            const resp = await fetch(API_BASE + '/tasks/' + btCurrentTaskId);
+            const resp = await authFetch(API_BASE + '/tasks/' + btCurrentTaskId);
             if (!resp.ok) {
                 consecutiveErrors++;
                 console.warn(`[回测轮询] HTTP ${resp.status}, 连续错误: ${consecutiveErrors}`);
@@ -1461,7 +1479,7 @@ async function btPollTask() {
             document.getElementById('bt-progress-bar').style.width = (task.progress * 100) + '%';
 
             if (task.status === 'completed') {
-                const r2 = await fetch(API_BASE + '/results/' + btCurrentTaskId);
+                const r2 = await authFetch(API_BASE + '/results/' + btCurrentTaskId);
                 const d2 = await r2.json();
                 if (d2.status === 'success') { btRenderResults(d2.data); }
                 document.getElementById('bt-loading-card').style.display = 'none';
@@ -1572,7 +1590,7 @@ async function btRenderChart(strategies) {
 
 function btSwitchStrat(key) {
     btCurrentStrategy = key;
-    fetch(API_BASE + '/results/' + btCurrentTaskId).then(r => r.json()).then(d => {
+    authJson(API_BASE + '/results/' + btCurrentTaskId).then(d => {
         if (d.status === 'success') {
             const sdata = d.data.strategy_results[key];
             if (sdata) {
@@ -1610,8 +1628,7 @@ function btSwitchStrat(key) {
 async function btLoadDailyDates() {
     document.getElementById('bt-ops-card').style.display = 'block';
     try {
-        const r = await fetch(API_BASE + '/results/' + btCurrentTaskId + '/daily?strategy=' + btCurrentStrategy);
-        const d = await r.json();
+        const d = await authJson(API_BASE + '/results/' + btCurrentTaskId + '/daily?strategy=' + btCurrentStrategy);
         const dates = d.data || [];
         const sel = document.getElementById('bt-date-selector');
         sel.innerHTML = dates.map(dt => '<option value="'+dt+'">'+dt.replace(/(\d{4})(\d{2})(\d{2})/,'$1-$2-$3')+'</option>').join('');
@@ -1623,8 +1640,7 @@ async function btLoadDailyOps() {
     const date = document.getElementById('bt-date-selector').value;
     if (!date) return;
     try {
-        const r = await fetch(API_BASE + '/results/' + btCurrentTaskId + '/daily?strategy=' + btCurrentStrategy + '&date=' + date);
-        const d = await r.json();
+        const d = await authJson(API_BASE + '/results/' + btCurrentTaskId + '/daily?strategy=' + btCurrentStrategy + '&date=' + date);
         const op = d.data;
         if (!op) { document.getElementById('bt-daily-ops').innerHTML = '<div style="padding:20px;color:var(--text-dim);">无数据</div>'; return; }
 

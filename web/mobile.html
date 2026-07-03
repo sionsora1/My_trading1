@@ -234,8 +234,13 @@
         }
 
         async function apiGet(path) {
-            const r = await fetch(`${BASE}${path}`);
+            const r = await fetch(`${BASE}${path}`, { headers: authHeaders() });
             return r.ok ? r.json() : {status:'error'};
+        }
+
+        function authHeaders(extra) {
+            const key = getApiKey();
+            return key ? { ...(extra || {}), 'Authorization': `Bearer ${key}` } : (extra || {});
         }
 
         function getApiKey() {
