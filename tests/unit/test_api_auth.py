@@ -1,5 +1,7 @@
 """Unit tests for API authentication guards."""
 
+from pathlib import Path
+
 import pytest
 from fastapi import HTTPException
 
@@ -113,3 +115,28 @@ def test_sensitive_write_routes_use_strong_auth_dependency():
             protected_paths.add(route.path)
 
     assert expected_paths <= protected_paths
+
+
+def test_live_page_sends_auth_for_protected_write_requests():
+    """Live page write actions must send the API key to protected routes."""
+    html = (
+        Path(__file__)
+        .resolve()
+        .parents[2]
+        .joinpath('web', 'live.html')
+        .read_text(encoding='utf-8')
+    )
+
+    assert "const API_KEY_STORAGE = 'quantApiKey';" in html
+    assert 'function writeFetch(url, options)' in html
+    assert "headers: authHeaders({'Content-Type':'application/json'})," in html
+
+    protected_direct_fetches = {
+        "fetch('/api/monitor/start'",
+        "fetch('/api/monitor/stop'",
+        "fetch('/api/watcher/start'",
+        "fetch('/api/watcher/stop'",
+        "fetch(`${BASE}/pool/${code}`",
+    }
+    for direct_fetch in protected_direct_fetches:
+        assert direct_fetch not in html

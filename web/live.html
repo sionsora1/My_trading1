@@ -1032,7 +1032,7 @@
             }
 
             try {
-                const r = await fetch('/api/monitor/start', {
+                const r = await writeFetch('/api/monitor/start', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ stock_pool: stockPool })
@@ -1054,7 +1054,7 @@
         }
 
         async function stopMonitor() {
-            const r = await fetch('/api/monitor/stop', { method: 'POST' }).then(res => res.json());
+            const r = await writeFetch('/api/monitor/stop', { method: 'POST' }).then(res => res.json());
             document.getElementById('btnMonitorStart').style.display = '';
             document.getElementById('btnMonitorStop').style.display = 'none';
             document.getElementById('monitorStatus').textContent = '未启动';
@@ -1302,7 +1302,7 @@
             const stockPool = getCurrentStockPool();
             if (!stockPool.length) { showToast('股票池为空', 'error'); return; }
             try {
-                const r = await fetch('/api/watcher/start', {
+                const r = await writeFetch('/api/watcher/start', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ stock_pool: stockPool })
                 }).then(res => res.json());
@@ -1328,7 +1328,7 @@
 
         async function stopWatcher() {
             try {
-                await fetch('/api/watcher/stop', { method: 'POST' });
+                await writeFetch('/api/watcher/stop', { method: 'POST' });
             } catch(e) {}
             document.getElementById('btnWatcherStart').style.display = '';
             document.getElementById('btnWatcherStop').style.display = 'none';
