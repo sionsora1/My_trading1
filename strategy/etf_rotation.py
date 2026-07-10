@@ -66,7 +66,17 @@ class EtfRotationStrategy(BaseStrategy):
 
     def generate_signals(self, date: str, market_data: dict,
                          portfolio: dict) -> List[dict]:
-        """生成交易信号"""
+        """生成交易信号
+
+        Args:
+            date: 当前日期，格式 YYYYMMDD
+            market_data: {ts_code: {close, ma28, return_20d, ...}} 当日市场数据
+            portfolio: {'cash': float, 'positions': {ts_code: position_data}}
+
+        Returns:
+            信号列表: [{'ts_code': str, 'signal': 'BUY'/'SELL',
+                       'weight': float, 'reason': str}]
+        """
         signals: List[dict] = []
         current_positions = portfolio.get('positions', {})
         holding_code = None
@@ -105,6 +115,25 @@ class EtfRotationStrategy(BaseStrategy):
         # ----- 有持仓：检查是否需要卖出 -----
         holding_stock = market_data.get(holding_code)
         if holding_stock is None:
+            # 持仓 ETF 不在 market_data 中（停牌/退市/数据缺失），
+            # 卖出持仓并切换到合格池第1（如有）
+            signals.append({
+                'ts_code': holding_code,
+                'signal': 'SELL',
+                'weight': 0,
+                'reason': f'ETF轮动/卖出（{holding_code}数据缺失，清仓避险）',
+            })
+            if best_code:
+                stock = market_data[best_code]
+                signals.append({
+                    'ts_code': best_code,
+                    'signal': 'BUY',
+                    'weight': self.max_single_weight,
+                    'reason': (
+                        f'ETF轮动/切换（{best_code} 20日涨幅{best_return:+.2%}'
+                        f'排名第1，MA28上方）'
+                    ),
+                })
             return signals
 
         should_sell = False

@@ -218,3 +218,22 @@ class TestEtfRotationEdgeCases:
         # 两只都不合格 → 无信号
         signals = s.generate_signals('20260710', market, _make_portfolio())
         assert signals == []
+
+    def test_holding_not_in_market_data_sells_and_switches(self):
+        """持仓 ETF 不在 market_data 中 → 卖出避险，切换至合格池#1"""
+        s = EtfRotationStrategy()
+        # 持有 513330，但 513330 不在 market_data 中（模拟停牌/数据缺失）
+        # 510300 合格（涨幅第一）
+        market = _make_market(
+            [(3.5, 3.0), (2.5, 2.0), (4.0, 3.5), (1.5, 1.2), (2.0, 1.8), (100, 95)],
+            {'510300': 0.08, '159915': 0.03},
+        )
+        del market['513330']  # 模拟停牌/数据缺失
+        signals = s.generate_signals('20260710', market, _make_portfolio(_pos('513330')))
+        sells = [s for s in signals if s['signal'] == 'SELL']
+        buys = [s for s in signals if s['signal'] == 'BUY']
+        assert len(sells) == 1
+        assert sells[0]['ts_code'] == '513330'
+        assert '数据缺失' in sells[0]['reason']
+        assert len(buys) == 1
+        assert buys[0]['ts_code'] == '510300'
