@@ -85,6 +85,7 @@ class SQLiteManager:
                 ma10        REAL,
                 ma20        REAL,
                 ma60        REAL,
+                ma28        REAL,
                 volume_ma20 REAL,
                 return_1d   REAL,
                 return_5d   REAL,
@@ -253,7 +254,7 @@ class SQLiteManager:
     def _migrate_derived_columns(self):
         """Add derived-indicator columns if they don't exist (v2.5 schema upgrade)."""
         derived_cols = [
-            'ma5', 'ma10', 'ma20', 'ma60', 'volume_ma20',
+            'ma5', 'ma10', 'ma20', 'ma28', 'ma60', 'volume_ma20',
             'return_1d', 'return_5d', 'return_20d', 'return_60d', 'volatility',
         ]
         existing = {r[1] for r in self._conn.execute('PRAGMA table_info(daily_bars)')}
@@ -345,7 +346,7 @@ class SQLiteManager:
         """
         cols = ['ts_code', 'trade_date', 'open', 'high', 'low', 'close',
                 'volume', 'amount', 'turnover', 'pct_chg',
-                'ma5', 'ma10', 'ma20', 'ma60', 'volume_ma20',
+                'ma5', 'ma10', 'ma20', 'ma28', 'ma60', 'volume_ma20',
                 'return_1d', 'return_5d', 'return_20d', 'return_60d', 'volatility']
         rows = [{c: row.get(c) for c in cols} for row in rows]
         placeholders = [f':{c}' for c in cols]
@@ -360,7 +361,7 @@ class SQLiteManager:
         sql = """
             SELECT ts_code, trade_date, open, high, low, close,
                    volume, amount, turnover, pct_chg,
-                   ma5, ma10, ma20, ma60, volume_ma20,
+                   ma5, ma10, ma20, ma28, ma60, volume_ma20,
                    return_1d, return_5d, return_20d, return_60d, volatility
             FROM daily_bars
             WHERE ts_code = ? AND trade_date >= ? AND trade_date <= ?
@@ -396,6 +397,7 @@ class SQLiteManager:
         df['_ma5'] = close.rolling(5, min_periods=1).mean()
         df['_ma10'] = close.rolling(10, min_periods=1).mean()
         df['_ma20'] = close.rolling(20, min_periods=1).mean()
+        df['_ma28'] = close.rolling(28, min_periods=1).mean()
         df['_ma60'] = close.rolling(60, min_periods=1).mean()
         df['_volume_ma20'] = volume.rolling(20, min_periods=1).mean()
         df['_return_1d'] = close.pct_change(1)
@@ -413,13 +415,13 @@ class SQLiteManager:
                 if existing.get('ma5') is not None:
                     continue
                 conn.execute(
-                    """UPDATE daily_bars SET ma5=?, ma10=?, ma20=?, ma60=?,
+                    """UPDATE daily_bars SET ma5=?, ma10=?, ma20=?, ma28=?, ma60=?,
                        volume_ma20=?, return_1d=?, return_5d=?, return_20d=?,
                        return_60d=?, volatility=?
                        WHERE ts_code=? AND trade_date=?""",
                     (
                         row.get('_ma5'), row.get('_ma10'), row.get('_ma20'),
-                        row.get('_ma60'), row.get('_volume_ma20'),
+                        row.get('_ma28'), row.get('_ma60'), row.get('_volume_ma20'),
                         row.get('_return_1d'), row.get('_return_5d'),
                         row.get('_return_20d'), row.get('_return_60d'),
                         row.get('_volatility'),
