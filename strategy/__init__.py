@@ -15,6 +15,7 @@ from .mean_reversion import EnhancedMeanReversionStrategy
 from .intraday_reversal import IntradayReversalStrategy
 from .low_volatility import EnhancedLowVolatilityStrategy
 from .sector_rotation import SectorRotationStrategy
+from .etf_rotation import EtfRotationStrategy
 
 # 策略注册表
 STRATEGY_REGISTRY = {
@@ -83,6 +84,12 @@ STRATEGY_REGISTRY = {
         'name': '盘中反转策略',
         'description': '基于5分钟K线检测V型底和A型顶，捕捉盘中反转机会',
         'category': 'intraday'
+    },
+    'etf_rotation': {
+        'class': EtfRotationStrategy,
+        'name': 'ETF行情轮动策略',
+        'description': '在6只ETF（沪深300/创业板/黄金/纳斯达克/恒生互联网/国债）间轮动，持有20日涨幅第一且站上28日均线的ETF',
+        'category': 'rotation'
     }
 }
 
